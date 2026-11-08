@@ -1,8 +1,18 @@
-data/raw/
-data/interim/
-data/processed/
+# Data, checkpoints, indexes: never in git (PLAN §12)
+data/*
+!data/.gitkeep
+!data/splits/
 runs/
+checkpoints/
+indexes/
 *.pt
 *.bin
+*.safetensors
+*.npy
+*.parquet
+# Python
 __pycache__/
+*.pyc
 .venv/
+.ipynb_checkpoints/
+.pytest_cache/
