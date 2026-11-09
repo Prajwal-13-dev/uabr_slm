@@ -183,3 +183,12 @@ D7 Tokenizer: byte-level BPE 12k; 9 special tokens with fixed ids
    Pretraining documents stored as <BOS> text <EOS>; no Q&A-formatted text in pretraining.
 OPEN (decide before notebook 04): prompt format for the closed-book G1 pilot, since the base model
    never sees Q&A format in pretraining (cloze-style templates vs few-shot vs small format adaptation).
+D8 Model: d_ff = 2048 -> exactly 39,707,136 parameters (A6). Pretraining on Kaggle 2x T4 with DDP,
+   one exact pass over train.bin (fixed block permutation) so every exposure copy is seen exactly once.
+   Recipe defaults: 131k tokens/step, AdamW (0.9, 0.95), wd 0.1, lr 1e-3 -> 1e-4 cosine, 500 warm-up, fp16.
+D9 Retrieval windows: 60 words, stride 30, each prefixed with its article title ("<title>: ...").
+   BM25 (k1 0.9, b 0.4), hashed bag of words, stop words removed, no stemming; top-20 cached per question.
+   RETRIEVAL CORPUS = the 1B-token pretraining subset from notebook 01 (PopQA forced + random fill, each
+   article once), NOT full Wikipedia. Articles outside the subset are not retrievable; distractors come only
+   from the subset. Full-Wikipedia retrieval (~110-125M windows) is a different, unimplemented configuration.
+   Notebook 02 states this, records it in meta.json ("retrieval_corpus": "pretraining_subset") and checks it in its gate.
