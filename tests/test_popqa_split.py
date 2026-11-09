@@ -19,7 +19,7 @@ def test_end_to_end_checks_pass():
     df, cfg, raw = build()
     checks = {c["name"]: c for c in P.split_checks(df, cfg, expected_rows=len(raw))}
     for name in ["no_group_leak", "no_subject_leak", "ood_relations_isolated", "pilot_size",
-                 "pilot_in_val_only", "pilot_not_in_test", "gold_aliases_nonempty", "overall_fractions_within_2pp"]:
+                 "pilot_in_val_only", "pilot_not_in_test", "pilot_unambiguous", "gold_aliases_nonempty", "overall_fractions_within_2pp"]:
         assert checks[name]["passed"], (name, checks[name]["detail"])
 
 
@@ -48,3 +48,9 @@ def test_relation_prior():
 def test_fingerprint_stable():
     raw = make(0.2)
     assert P.fingerprint(raw) == P.fingerprint(raw.sample(frac=1, random_state=3))
+
+
+def test_splits_independent_of_pilot_pool():
+    df, cfg, _ = build()
+    assert not df.loc[df["is_pilot"], "ambiguous_question"].any()
+    assert (df["in_main"] == ~df["ambiguous_question"]).all()

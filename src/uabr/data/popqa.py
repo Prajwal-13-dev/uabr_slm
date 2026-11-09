@@ -110,6 +110,9 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     # Same question text for different subjects (homonyms) -> unanswerable closed-book
     n_subj = df.groupby("q_norm")["subj_id"].transform("nunique")
     df["ambiguous_question"] = n_subj > 1
+    # Main-analysis flag (team decision 2026-11-09): ambiguous questions are kept in the
+    # data but excluded from routing labels, replay buffers and primary metrics.
+    df["in_main"] = ~df["ambiguous_question"]
     return df
 
 
@@ -191,9 +194,10 @@ def assign_splits(df: pd.DataFrame, cfg: SplitConfig) -> pd.DataFrame:
 
 
 def select_pilot(df: pd.DataFrame, cfg: SplitConfig) -> pd.DataFrame:
-    """500 validation-only questions, stratified by relation (with a floor) and popularity."""
+    """500 validation-only, unambiguous (in_main) questions, stratified by relation
+    (with a floor) and popularity. Changing the pool never changes the splits."""
     rng = np.random.default_rng(cfg.seed + 1)
-    val = df[df["split"] == "val"]
+    val = df[(df["split"] == "val") & df["in_main"]]
     counts = val["prop"].value_counts()
     # proportional allocation with a per-relation floor, then rescale to pilot_size
     alloc = {r: max(cfg.pilot_min_per_relation, c * cfg.pilot_size / len(val)) for r, c in counts.items()}
@@ -232,16 +236,19 @@ def select_pilot(df: pd.DataFrame, cfg: SplitConfig) -> pd.DataFrame:
 def relation_majority(df: pd.DataFrame, cfg: SplitConfig) -> Tuple[pd.DataFrame, pd.Series]:
     """Best constant answer per relation, chosen on TRAIN with alias-aware EM (PLAN §7.1).
 
+    Fitted and scored on `in_main` rows only (ambiguous questions excluded), so it is
+    directly comparable with model EM later. `prior_correct` is still filled for all rows.
     OOD relations have no training rows; their prior is chosen on the OOD rows
     themselves (an optimistic, oracle prior - flagged in the table).
     Returns (per-relation table, per-row `prior_correct` series).
     """
     rows, prior_correct = [], pd.Series(0.0, index=df.index)
+    main = df["in_main"] if "in_main" in df else pd.Series(True, index=df.index)
     for rel, sub in df.groupby("prop"):
-        fit = sub[sub["split"] == "train"]
+        fit = sub[(sub["split"] == "train") & main.loc[sub.index]]
         oracle = fit.empty
         if oracle:
-            fit = sub
+            fit = sub[main.loc[sub.index]]
         cands = fit["answer"].map(str).value_counts().index[: cfg.majority_candidates]
         best, best_acc = None, -1.0
         for c in cands:
@@ -253,10 +260,11 @@ def relation_majority(df: pd.DataFrame, cfg: SplitConfig) -> Tuple[pd.DataFrame,
         rec = {"relation": rel, "prior_answer": best, "prior_fit_on": "ood(oracle)" if oracle else "train",
                "n_distinct_answers": sub["answer"].nunique(), "n": len(sub)}
         for s in ("train", "val", "test", "ood"):
-            m = sub["split"] == s
+            m = (sub["split"] == s) & main.loc[sub.index]
             rec[f"acc_{s}"] = float(hit[m].mean()) if m.any() else np.nan
             rec[f"n_{s}"] = int(m.sum())
         rec["acc_pilot"] = float(hit[sub["is_pilot"]].mean()) if sub["is_pilot"].any() else np.nan
+        rec["n_ambiguous"] = int((~main.loc[sub.index]).sum())
         rows.append(rec)
     return pd.DataFrame(rows).sort_values("relation").reset_index(drop=True), prior_correct
 
@@ -283,6 +291,7 @@ def split_checks(df: pd.DataFrame, cfg: SplitConfig, expected_rows: int = 14267)
     add("pilot_size", len(pilot) == cfg.pilot_size, f"{len(pilot)} pilot questions")
     add("pilot_in_val_only", (pilot["split"] == "val").all(), f"splits: {pilot['split'].value_counts().to_dict()}")
     add("pilot_not_in_test", not (pilot["split"] == "test").any(), "A9")
+    add("pilot_unambiguous", bool(pilot["in_main"].all()), f"{int((~pilot['in_main']).sum())} ambiguous in pilot")
     add("gold_aliases_nonempty", (df["n_aliases"] > 0).all(), f"{int((df['n_aliases']==0).sum())} empty")
 
     frac = ind["split"].value_counts(normalize=True)
