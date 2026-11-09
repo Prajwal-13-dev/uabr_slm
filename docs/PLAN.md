@@ -192,3 +192,12 @@ D9 Retrieval windows: 60 words, stride 30, each prefixed with its article title 
    article once), NOT full Wikipedia. Articles outside the subset are not retrievable; distractors come only
    from the subset. Full-Wikipedia retrieval (~110-125M windows) is a different, unimplemented configuration.
    Notebook 02 states this, records it in meta.json ("retrieval_corpus": "pretraining_subset") and checks it in its gate.
+D10 Evidence overflow rule: use top-3 windows if question + windows fit 512 tokens, else top-2, else top-1;
+    the number of windows used is logged per question.
+D11 G1 prompt format = ASSUMPTION (team did not answer): relation cloze template + 3 same-relation TRAIN facts
+    as demonstrations (LAMA-style); evidence condition = windows before the same prompt. Change in notebook 04 if needed.
+    G1 criteria as implemented: (a) pilot closed-book EM - relation prior >= 5 pp with clustered-CI lower bound > 0;
+    (b) EM rises with popularity (top - bottom bin) or exposure (High - Control), CI lower bound > 0 on all in-main val;
+    (c) P(b_quality > 0) < 90%; (d) >= 1 retrieval-damage case.
+D12 Evidence selection: walk the cached top-20 in rank order, skip any window overlapping an already chosen
+    window of the same article (start offsets < 60 words apart), take up to 3; then apply D10 (3 -> 2 -> 1).
