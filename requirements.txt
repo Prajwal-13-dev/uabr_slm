@@ -1,8 +1,13 @@
 torch>=2.1
 numpy
+pandas
+pyarrow
 pyyaml
 tqdm
 datasets
-rank_bm25
+huggingface_hub
+tokenizers>=0.15
+bm25s
 scikit-learn
+matplotlib
 pytest
