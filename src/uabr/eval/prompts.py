@@ -1,7 +1,8 @@
 """Cloze prompts for probing the plain-Wikipedia base model (notebook 04, G1 pilot).
 
-ASSUMPTION (team did not answer the prompt-format question, 2026-11-09): relation-specific cloze
-templates with 3 same-relation TRAIN facts as demonstrations (LAMA-style probing). The evidence
+v1 (2026-11-09, assumption): cloze + 3 same-relation TRAIN demonstrations -> the 40M model copied
+demonstration answers (59% exact copies). v2 (2026-11-10): ZERO-SHOT cloze is the primary generation
+probe; demonstrations are kept only as an optional secondary mode. The evidence
 condition puts the retrieved windows before the same prompt. Evidence windows: top-3 if they fit
 the context, else top-2, else top-1 (team decision 2026-11-09); the count used is logged.
 """
@@ -66,9 +67,27 @@ def evidence_prompt(windows: Sequence[str], relation: str, subj: str, demos) -> 
     return "".join(w + "\n" for w in windows) + "\n" + closed_prompt(relation, subj, demos)
 
 
-_CUT = re.compile(r"\n|\.(?:\s|$)|,|;|\s\(")
+_ABBR = {"st", "dr", "mr", "mrs", "ms", "jr", "sr", "mt", "no", "vs", "co", "inc", "ltd", "ft", "gen", "col", "lt", "rev", "prof"}
 
 
 def clean_generation(text: str) -> str:
-    """Answer span = continuation up to the first newline / sentence end / comma / ' ('."""
-    return _CUT.split(text.strip(), maxsplit=1)[0].strip()
+    """Answer span = continuation up to the first newline, comma, semicolon, ' (' or sentence-ending
+    period. A period after a single letter ("John H. Smith", "U.S.") or a known abbreviation
+    ("St. Louis") does NOT end the answer. (Fixes the v1 bug that cut "John H. Smith" to "John H".)"""
+    t = text.strip().split("\n", 1)[0]
+    for sep in [",", ";", " ("]:
+        t = t.split(sep, 1)[0]
+    out = []
+    words = t.split(" ")
+    for w in words:
+        out.append(w)
+        if w.endswith(".") and len(w) > 1:
+            core = w[:-1].lower()
+            initial = len(core.replace(".", "")) <= 1 or re.fullmatch(r"([a-z]\.)+[a-z]", core) is not None
+            if not initial and core not in _ABBR:
+                out[-1] = w[:-1]
+                break
+    return " ".join(out).strip()
+
+
+ZERO_SHOT: dict = {}   # pass as `demos` for zero-shot cloze (no demonstrations -> no answer copying)

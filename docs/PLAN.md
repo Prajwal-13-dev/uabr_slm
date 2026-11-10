@@ -201,3 +201,23 @@ D11 G1 prompt format = ASSUMPTION (team did not answer): relation cloze template
     (c) P(b_quality > 0) < 90%; (d) >= 1 retrieval-damage case.
 D12 Evidence selection: walk the cached top-20 in rank order, skip any window overlapping an already chosen
     window of the same article (start offsets < 60 words apart), take up to 3; then apply D10 (3 -> 2 -> 1).
+
+========================================
+16. G1 RESULT AND OPTION A (Nov 10 2026)
+========================================
+G1 v1 FAILED: pilot closed-book EM 1.2% vs relation prior 9.6% (-8.4 pp [-11.4, -5.4]).
+Diagnosis: (i) cloze+3-demo prompt -> demonstration copying (59% exact copies; one answer per relation for >=94%
+of questions); (ii) randomized +0/+1/+4/+16 article-copy exposure had NO effect on gold-answer log-prob
+(High-Control -0.15 nats [-0.57, +0.29]); (iii) evidence raises gold log-prob +0.66 nats [0.56, 0.77].
+Also a bug: generation stopped at any '.', cutting names at initials ("John H").
+Decision (team): Option A = authentic fact-sentence re-injection by continued pretraining (notebook 03b):
+  A1 4,000 subjects (all splits, in_main), stratified relation x popularity, 1,000 each at 0/16/64/256 injected
+     sentences per fact; doses REPLACE the old exposure groups for all analyses.
+  A2 Repeat unit: all authentic corpus sentences naming the subject and containing a gold alias (subject article,
+     object article, top-20 BM25 window articles), cycled across copies. String-match proxy; 100-row audit exported.
+  A3 Continued pretraining from model_final.pt: ~25% fact sentences / ~75% replayed pretraining blocks;
+     fresh AdamW, lr 2e-4 -> 2e-5 cosine, 50 warm-up (defaults); forgetting gate: val loss rise <= 0.05 nats.
+Notebook 04 v2: zero-shot cloze (no demonstrations), stop only at newline, fixed answer cleaning; ranking probe
+(gold vs 30 same-relation distractors, with vs without subject) and verbatim probe; G1b = dose 256 - dose 0.
+If G1 still fails: verbatim rises but ranking/EM flat = memorised, not extractable; nothing rises = capacity ->
+instructor decision (larger model / pretrained model).
