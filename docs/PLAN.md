@@ -265,3 +265,21 @@ Team fix (06 v2): R5 frozen tied embedding matrix + half-A Q&A replay (answer-to
 checkpoints qualify only if closed EM within 1 pp of theta0 (300-question val subset); hard gate G6b: closed AND
 evidence EM of the routed model within 1 pp of theta0 (500 val). R6 2-logit loss kept and declared: the policy compares
 z_CALL vs z_ANSWER at <ASSISTANT> (free-generation emission 0%, A5).
+
+========================================
+19. NOTEBOOK 06 v2 RESULT + NOTEBOOK 07 DESIGN (Phase 5 SFT-only pilot, Nov 10 2026)
+========================================
+06 v2: all gates PASS. lambda 0.1875; router [action] val AUROC 0.838 [0.815, 0.858] (GO); closed EM 12.4 -> 11.6 %,
+evidence EM 21.6 -> 22.4 % (G6b preserved); free-generation emission 0 % (declared, A5).
+07 protocol = uabr-slm-main docs/pilot_decision.md, unchanged: Dolly-15k + Alpaca-cleaned (pinned HF revisions),
+plain SFT format <USER> instruction<ASSISTANT> response<EOS> (no action tokens, A5 primary), <= 512 tokens, ~6M tokens,
+1 epoch, 500 held-out instruction examples, shuffle seed 2026; AdamW (0.9, 0.95), wd 0.01, LR 5e-5 constant after 30
+warm-up, batch 32, clip 1, fp16, all weights train; seeds 11 and 29; checkpoints 25 / 50 / 100 %. Start = theta_route,preSFT
+(06 router_action.pt) = E0 and the 0 % point. Evaluation on all labelled in_main validation questions (test sealed).
+Decision rule unchanged (GO / RECALIBRATION_ONLY / NO_CHANGE on 100 % minus 0 %: AUROC, acc at re-picked 10 % budget,
+acc at frozen 10 % threshold). Declared adaptations: (1) paired bootstrap resamples subject clusters (A9);
+(2) AUROC is against the frozen theta0 labels (A3a), budget accuracy uses fresh greedy closed/evidence EM of each
+checkpoint (A3b); (3) instruction rows stating a val/test PopQA fact (subject AND gold alias) are removed before the
+token budget is filled (sft_overlap_audit.csv). A4: flips by pre-SFT margin quintile at boundary 0 (m_i = |z_C - z_A|)
+and at the frozen 10 % threshold, AUROC(-m -> flip), A->C / C->A counts. A5: emission rate, P(<ANSWER>)+P(<CALL>),
+action-token rank, two-way AUROC, re-tuned 10 % threshold.
