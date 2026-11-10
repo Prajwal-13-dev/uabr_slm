@@ -121,14 +121,17 @@ class LlamaLM(nn.Module):
     def num_params(self) -> int:
         return sum(p.numel() for p in self.parameters())             # tied weight counted once
 
-    def forward(self, idx, targets=None, ignore_index: int = -100):
+    def forward(self, idx, targets=None, ignore_index: int = -100, return_hidden: bool = False):
         T = idx.shape[1]
         assert T <= self.cfg.max_seq_len, f"sequence {T} > max_seq_len {self.cfg.max_seq_len}"
         x = self.embed(idx)
         cos, sin = self.rope_cos[:T], self.rope_sin[:T]
         for b in self.blocks:
             x = b(x, cos, sin)
-        logits = self.lm_head(self.norm(x))
+        h = self.norm(x)
+        logits = self.lm_head(h)
+        if return_hidden:
+            return logits, h
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.float().reshape(-1, logits.size(-1)), targets.reshape(-1),
