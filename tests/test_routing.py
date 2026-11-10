@@ -58,3 +58,22 @@ def test_greedy_features_shapes():
     assert f["conf_mean_lp"] < 0 and 0 <= f["conf_first_p"] <= 1 and f["h_assistant"].shape == (32,)
     f2 = greedy_features(m, [1, 3, 12, 13, 4, 5], [], "cpu")
     assert np.isnan(f2["conf_mean_lp"])
+
+
+def test_freeze_embed_and_replay_and_qualify():
+    rng = np.random.default_rng(0)
+    prompts, y = [], []
+    for i in range(120):
+        body = list(rng.integers(10, 40, 6)); lab = int(rng.random() < 0.5)
+        if lab: body[2] = 50
+        prompts.append([T.BOS_ID, T.USER_ID] + [int(t) for t in body] + [T.ASSISTANT_ID]); y.append(lab)
+    replay = [([1, 3, 12, 13, 4, 5, 30, 31, 2], [False] * 6 + [True] * 3) for _ in range(10)]
+    m = _toy(); e0 = m.embed.weight.detach().clone()
+    calls = []
+    def qualify(model):
+        calls.append(1); return (len(calls) % 2 == 0), {"k": len(calls)}
+    best, hist = train_router(m, prompts[:90], y[:90], prompts[90:], y[90:], "action", "cpu", lr=3e-3, epochs=2, bs=16,
+                              eval_every=3, log=lambda *a: None, freeze_embed=True, replay_examples=replay, qualify=qualify)
+    assert torch.equal(m.embed.weight, e0) and torch.equal(m.lm_head.weight, e0)     # tied matrix untouched
+    assert best["info"]["k"] % 2 == 0                                                # only qualifying checkpoints selected
+    assert any(not h["qualifies"] for h in hist)

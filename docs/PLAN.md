@@ -257,3 +257,11 @@ Notebook 06 design (team decisions):
   R3 Both router formats trained on half B (action: <ANSWER> vs <CALL> at <ASSISTANT>; answer_slot: <CALL> vs the model's
      own first answer token); theta_route,preSFT = higher val AUROC.
   R4 G6: val AUROC >= 0.65 GO; 0.58-0.65 continue with warning; < 0.58 STOP. Relation-only baseline reported, not required.
+06 run 1 (Nov 10): G1c/G1d (arm M) PASS; lambda 0.1875 (19% CALL labels); G4 Spearman 0.579 [0.541, 0.616];
+G5 hidden probe AUROC 0.802 [0.775, 0.823]; router [action] val AUROC 0.836 [0.815, 0.856] (GO), answer_slot 0.819,
+relation-only 0.759. Outcomes: neither 75%, only-call 14%, both 9%, only-answer 2% -> the router mainly learns when
+retrieval helps. PROBLEM: router training cut closed-book EM 12.4% -> 3.2% (labels stale).
+Team fix (06 v2): R5 frozen tied embedding matrix + half-A Q&A replay (answer-token loss) during router training;
+checkpoints qualify only if closed EM within 1 pp of theta0 (300-question val subset); hard gate G6b: closed AND
+evidence EM of the routed model within 1 pp of theta0 (500 val). R6 2-logit loss kept and declared: the policy compares
+z_CALL vs z_ANSWER at <ASSISTANT> (free-generation emission 0%, A5).
