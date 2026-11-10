@@ -31,6 +31,9 @@ def test_clean_generation():
     assert PR.clean_generation(" Paris, France") == "Paris"
     assert PR.clean_generation(" rock music (genre)") == "rock music"
     assert PR.clean_generation(" St.Louis") == "St.Louis"
+    assert PR.clean_generation(" John H. Smith.\nX") == "John H. Smith"
+    assert PR.clean_generation(" St. Louis, Missouri") == "St. Louis"
+    assert PR.clean_generation(" politician. He was") == "politician"
 
 
 class _Tok:  # minimal tokenizer stub: 1 char = 1 id

@@ -49,6 +49,7 @@ class TrainConfig:
     ckpt_minutes: float = 30.0
     max_hours: float = 11.0                           # stop + checkpoint before Kaggle's 12h limit
     max_steps: int = 0                                # 0 = full single pass (testing only otherwise)
+    init_from: str = ""                               # continued pretraining: load model weights only (fresh optimizer)
 
 
 # --------------------------------------------------------------------------- dist helpers
@@ -173,6 +174,10 @@ def main(cfg_path: str):
     ctx = torch.autocast(device.type, dtype=dtype) if device.type == "cuda" and dtype != torch.float32 else nullcontext()
 
     start_step, ckpt_path = 0, os.path.join(c.out_dir, "ckpt_latest.pt")
+    if c.init_from and not os.path.exists(ckpt_path):
+        init = torch.load(c.init_from, map_location=device, weights_only=False)
+        model.load_state_dict(init["model"])
+        log(f"initialised weights from {c.init_from}")
     if os.path.exists(ckpt_path):
         ck = torch.load(ckpt_path, map_location=device, weights_only=False)
         model.load_state_dict(ck["model"]); opt.load_state_dict(ck["optim"])
