@@ -240,3 +240,20 @@ Decision (team): notebook 05 = mixed training.
      EM - EM(subject replaced by "the subject") CI lo > 0; (b) subject-specific EM or ranking d256-d0 CI lo > 0;
      (c) P(b>0) < 90%; (d) >= 1 retrieval damage.
   Defaults: 8 passes over half A; RAFT oracle swap p=0.5; lr 2e-4 -> 2e-5, 50 warm-up.
+
+========================================
+18. NOTEBOOK 05 RESULT, theta0 SWITCH, NOTEBOOK 06 DESIGN (Nov 10 2026)
+========================================
+05 result: G1 v3 FAIL formally (theta0=S by pre-set rule: dosed val EM-prior +3.98 pp [+1.57, +6.50]; S lost accuracy
+on d256 facts, relation-adjusted -7.7 pp [-13.4, -1.6]). Knowledge concentrated in country (+31 pp) and capital
+(+29 pp); none for person/work relations; no within-relation popularity trend (-0.6 pp [-4.5, +3.2]).
+Arm M: dosed EM-prior +5.53 [+3.05, +8.10]; dosed subject-specific +7.30 [+4.79, +9.87]; all-val EM-prior +3.48 [+2.26, +4.77].
+DEVIATION (team decision, Option 2): theta0 = arm M instead of the pre-set rule's arm S, because S's d256 errors would
+leak into half-B routing labels. Dose-based exposure claims are dropped.
+Notebook 06 design (team decisions):
+  R1 Labels (A1) with frozen theta0=M on half B (training), val (selection/gates), test (sealed, for later retention eval).
+  R2 b = 0 questions kept; label CALL iff b_quality - lambda > 0. Lambda from a 1/16 grid chosen on val as the value whose
+     labels best agree (balanced accuracy) with the realised greedy outcome "evidence strictly helps" (my rule).
+  R3 Both router formats trained on half B (action: <ANSWER> vs <CALL> at <ASSISTANT>; answer_slot: <CALL> vs the model's
+     own first answer token); theta_route,preSFT = higher val AUROC.
+  R4 G6: val AUROC >= 0.65 GO; 0.58-0.65 continue with warning; < 0.58 STOP. Relation-only baseline reported, not required.
