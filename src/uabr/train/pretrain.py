@@ -50,6 +50,8 @@ class TrainConfig:
     max_hours: float = 11.0                           # stop + checkpoint before Kaggle's 12h limit
     max_steps: int = 0                                # 0 = full single pass (testing only otherwise)
     init_from: str = ""                               # continued pretraining: load model weights only (fresh optimizer)
+    items_x: str = ""                                 # notebook 05: packed items (N, seq_len+1) uint16 .npy ...
+    items_m: str = ""                                 # ... and their target masks (N, seq_len) bool .npy
 
 
 # --------------------------------------------------------------------------- dist helpers
@@ -93,6 +95,22 @@ class BlockStream:
     def batch(self, start: int, n: int) -> torch.Tensor:
         rows = [self.data[b * self.T: b * self.T + self.T + 1] for b in self.blocks[start:start + n]]
         return torch.from_numpy(np.stack(rows).astype(np.int64))
+
+
+class ItemStream:
+    """Exact single pass over packed items (tokens + target mask), sharded across ranks."""
+
+    def __init__(self, x_path: str, m_path: str, rank: int, world: int, seed: int):
+        self.x = np.load(x_path, mmap_mode="r"); self.m = np.load(m_path, mmap_mode="r")
+        assert self.x.shape[0] == self.m.shape[0] and self.x.shape[1] == self.m.shape[1] + 1
+        self.n_blocks = self.x.shape[0]
+        perm = np.random.default_rng(seed).permutation(self.n_blocks)
+        self.per_rank = self.n_blocks // world
+        self.blocks = perm[rank::world][: self.per_rank]
+
+    def batch(self, start: int, n: int):
+        rows = np.sort(self.blocks[start:start + n])
+        return (torch.from_numpy(self.x[rows].astype(np.int64)), torch.from_numpy(np.asarray(self.m[rows], dtype=bool)))
 
 
 def lr_at(step: int, total: int, c: TrainConfig) -> float:
@@ -154,7 +172,11 @@ def main(cfg_path: str):
     accum = c.global_batch_seqs // (c.micro_batch_seqs * world)
     assert accum >= 1 and accum * c.micro_batch_seqs * world == c.global_batch_seqs, \
         "global_batch_seqs must be divisible by micro_batch_seqs * world_size"
-    stream = BlockStream(c.train_bin, c.seq_len, rank, world, c.data_seed)
+    if c.items_x:
+        stream = ItemStream(c.items_x, c.items_m, rank, world, c.data_seed)
+        assert stream.x.shape[1] == c.seq_len + 1
+    else:
+        stream = BlockStream(c.train_bin, c.seq_len, rank, world, c.data_seed)
     seqs_per_rank_step = c.micro_batch_seqs * accum
     total_steps = stream.per_rank // seqs_per_rank_step
     if c.max_steps:
@@ -219,10 +241,15 @@ def main(cfg_path: str):
         loss_acc = torch.zeros(1, device=device)
         base = step * seqs_per_rank_step
         for m in range(accum):
-            xy = stream.batch(base + m * c.micro_batch_seqs, c.micro_batch_seqs).to(device, non_blocking=True)
+            b = stream.batch(base + m * c.micro_batch_seqs, c.micro_batch_seqs)
+            if isinstance(b, tuple):                    # packed items: loss only on masked targets
+                xy, mk = b[0].to(device, non_blocking=True), b[1].to(device, non_blocking=True)
+                tgt = xy[:, 1:].clone(); tgt[~mk] = -100
+            else:
+                xy = b.to(device, non_blocking=True); tgt = xy[:, 1:]
             sync = (m == accum - 1) or world == 1
             with (nullcontext() if sync else model.no_sync()), ctx:
-                _, loss = model(xy[:, :-1], xy[:, 1:])
+                _, loss = model(xy[:, :-1], tgt)
                 loss = loss / accum
             (scaler.scale(loss) if scaler else loss).backward()
             loss_acc += loss.detach()
