@@ -64,3 +64,17 @@ def test_assign_doses_exact_balance_small_n():
     assert c.max() - c.min() <= 1
     per = pd.crosstab([a["primary_prop"], a["pop_bin"]], a["dose_group"])
     assert ((per.max(axis=1) - per.min(axis=1)) <= 1).all()
+
+
+def test_split_sentences_punctuation_only_pieces():
+    # regression: Kaggle crash on pieces like "..." (IndexError in split_sentences)
+    for t in ["...", "?!", ". . .", "!!! ???", "Hello... World. ...Yes.", "\n\n...\n", "(1990). Next", "é. Ü. 中文。 Test."]:
+        split_sentences(t)
+    assert split_sentences("Real text. ... More text.") == ["Real text. ...", "More text."]
+
+
+def test_fact_sentences_accepts_presplit_lists():
+    cfg = ReinjectConfig()
+    t = "Hamlet is a 1948 film directed by Laurence Olivier. ..."
+    assert fact_sentences_for([t], ["Hamlet"], ["Laurence Olivier"], cfg) == \
+           fact_sentences_for([split_sentences(t)], ["Hamlet"], ["Laurence Olivier"], cfg)

@@ -54,10 +54,13 @@ def split_sentences(text: str) -> List[str]:
         pieces = _SPLIT.split(para)
         buf = ""
         for p in pieces:
-            buf = f"{buf} {p}".strip() if buf else p
-            last = buf.rstrip(".!?").split()[-1].lower() if buf.split() else ""
+            buf = f"{buf} {p}".strip() if buf else p.strip()
+            if not buf:
+                continue
+            toks = buf.rstrip(".!?").split()          # may be empty for pieces like "..." or "?!"
+            last = toks[-1].lower() if toks else ""
             # keep merging when the period belongs to an initial ("H.") or an abbreviation ("St.")
-            if buf.endswith(".") and (len(last) == 1 and last.isalpha() or last in _ABBR):
+            if buf.endswith(".") and last and ((len(last) == 1 and last.isalpha()) or last in _ABBR):
                 continue
             out.append(buf); buf = ""
         if buf:
@@ -65,11 +68,12 @@ def split_sentences(text: str) -> List[str]:
     return out
 
 
-def fact_sentences_for(texts: Iterable[str], subj_names: Sequence[str], gold: Sequence[str],
+def fact_sentences_for(texts: Iterable, subj_names: Sequence[str], gold: Sequence[str],
                        cfg: ReinjectConfig) -> List[str]:
+    """texts: raw article texts, or already-split sentence lists (list of str per article)."""
     seen, out = set(), []
     for t in texts:
-        for s in split_sentences(t):
+        for s in (split_sentences(t) if isinstance(t, str) else t):
             n = len(s.split())
             if n < cfg.min_words or n > cfg.max_words or s in seen:
                 continue
