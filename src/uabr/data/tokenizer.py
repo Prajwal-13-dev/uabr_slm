@@ -11,6 +11,7 @@ import numpy as np
 SPECIAL_TOKENS = ["<PAD>", "<BOS>", "<EOS>", "<USER>", "<ASSISTANT>", "<ANSWER>", "<CALL>",
                   "<EVIDENCE>", "</EVIDENCE>"]
 PAD_ID, BOS_ID, EOS_ID = 0, 1, 2
+USER_ID, ASSISTANT_ID, ANSWER_ID, CALL_ID, EVIDENCE_ID, EVIDENCE_END_ID = 3, 4, 5, 6, 7, 8
 
 
 def train_bpe(texts: Iterable[str], vocab_size: int = 12000, min_frequency: int = 2):

@@ -221,3 +221,22 @@ Notebook 04 v2: zero-shot cloze (no demonstrations), stop only at newline, fixed
 (gold vs 30 same-relation distractors, with vs without subject) and verbatim probe; G1b = dose 256 - dose 0.
 If G1 still fails: verbatim rises but ranking/EM flat = memorised, not extractable; nothing rises = capacity ->
 instructor decision (larger model / pretrained model).
+
+========================================
+17. G1 v2 RESULT AND MIXED TRAINING (Nov 10 2026)
+========================================
+03b gate PASS: val loss 2.8968 -> 2.9341 (+0.037); verbatim answer log-prob d256-d0 +3.40 nats.
+04 v2: verbatim completion 13% -> 96% at d256 (+82.8 pp [+77.8, +87.7]); ranking acc@1 +11.4 pp [+3.4, +19.5] BUT
++7.7 pp [+1.8, +13.3] of it also appears without the subject (answer-frequency boost); subject-specific part
++3.7 pp [-4.0, +11.6] (n.s.). => memorised, not extractable. Correction: the v2 G1b PASS was confounded.
+Decision (team): notebook 05 = mixed training.
+  M1 In-main train split into half A (closed-book Q&A + RAFT evidence reading) and half B (never Q&A; routing
+     labels come from half B). Grouped by subject, stratified relation x dose. Val/test untouched.
+  M2 Formats: <USER> q <ASSISTANT><ANSWER> a<EOS> and <USER> q <ASSISTANT><CALL><EVIDENCE> windows</EVIDENCE> a<EOS>;
+     loss on answer + <EOS> only (not question, evidence or action token).
+  M3 Two arms with identical Q&A data: M = base + 03b injection stream + half-A Q&A mixed; S = 03b model + half-A
+     Q&A + replay (3x). theta0 = arm with higher subject-specific val EM (rule fixed in advance; tie -> M).
+  M4 G1 v3 (theta0, val facts never seen as Q&A): (a) dosed val EM - prior >= 5 pp, CI lo > 0, and
+     EM - EM(subject replaced by "the subject") CI lo > 0; (b) subject-specific EM or ranking d256-d0 CI lo > 0;
+     (c) P(b>0) < 90%; (d) >= 1 retrieval damage.
+  Defaults: 8 passes over half A; RAFT oracle swap p=0.5; lr 2e-4 -> 2e-5, 50 warm-up.

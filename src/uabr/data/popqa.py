@@ -311,3 +311,20 @@ def split_checks(df: pd.DataFrame, cfg: SplitConfig, expected_rows: int = 14267)
     pb_dev = float((pb - pb.loc["train"]).abs().max().max())
     add("popularity_balance_within_3pp", pb_dev <= 0.03, f"max pop-bin share gap vs train {pb_dev:.3f}", "warn")
     return out
+
+
+# --------------------------------------------------------------------------- train halves (notebook 05)
+def split_train_halves(df: pd.DataFrame, seed: int = 505, by: Sequence[str] = ("prop", "dose_group")) -> pd.Series:
+    """Split in-main TRAIN rows into halves 'A' (Q&A + reading training) and 'B' (never trained as Q&A;
+    source of routing labels). Grouped by group_id, stratified by `by`. Returns a Series indexed like df
+    with 'A' / 'B' for in-main train rows and '' elsewhere."""
+    from sklearn.model_selection import StratifiedGroupKFold
+
+    out = pd.Series("", index=df.index, dtype=object)
+    tr = df[(df["split"] == "train") & df["in_main"]]
+    strata = tr[list(by)].astype(str).agg("|".join, axis=1)
+    sgkf = StratifiedGroupKFold(n_splits=2, shuffle=True, random_state=seed)
+    _, idx_b = next(sgkf.split(tr, strata, groups=tr["group_id"]))
+    half = pd.Series("A", index=tr.index); half.iloc[idx_b] = "B"
+    out.loc[tr.index] = half
+    return out
