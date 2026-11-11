@@ -5,8 +5,10 @@ batch 32 sequences, AdamW (0.9, 0.95), weight decay 0.01 (matrices only), LR 5e-
 steps, grad clip 1.0, fp16. The constant LR makes the 25 % / 50 % checkpoints of one run equal to separate
 shorter runs. No checkpoint selection: every branch is compared at the same update count.
 
-Every branch with the same seed sees exactly the same instruction batches in the same order; replay examples
-(Phase 6) are inserted INSIDE those batches (add_replay), so all branches make the same number of updates.
+Every branch with the same seed sees exactly the same instruction batches in the same order, so all branches make
+the same number of updates. Phase 6 replay (team decision, Nov 11 2026) is action-token only and enters as a separate
+term per update: L = L_SFT + beta * L_replay (train_sft(replay=..., beta=...)). add_replay (token-weighted insertion
+into the batches, as uabr-slm-main) is kept for reference only.
 Examples are (tokens, is-target flags) as in uabr.data.qa_format.
 """
 from __future__ import annotations
@@ -93,9 +95,21 @@ def save_weights(model, path, model_cfg: Dict, extra: Dict):
     return path
 
 
+def replay_loss(model, prompts, targets, device):
+    """Action-token-only replay: 2-logit CE over {<ANSWER>, <CALL>} at the last prompt position (router loss)."""
+    from uabr.data.tokenizer import ANSWER_ID, CALL_ID
+    from uabr.routing.router import _batch
+    x, last = _batch(prompts, device)
+    logits, _ = model(x)
+    z = logits[torch.arange(len(last), device=x.device), last].float()
+    return torch.nn.functional.cross_entropy(z[:, [ANSWER_ID, CALL_ID]], torch.tensor(targets, device=x.device))
+
+
 def train_sft(model, batches: Sequence[Sequence[Example]], cfg: Dict, seed: int, out_dir, save_at_steps=(),
-              log=print) -> Dict:
-    """One pass over pre-built batches. Writes step_{N}.pt at save_at_steps, final.pt, train_log.csv, summary.json."""
+              log=print, replay=None, beta: float = 0.0) -> Dict:
+    """One pass over pre-built batches. Writes step_{N}.pt at save_at_steps, final.pt, train_log.csv, summary.json.
+    replay(step, model) -> (prompts, targets) adds beta * replay_loss for that update (Phase 6 arms); the update
+    count and the instruction batches are unchanged."""
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     device = next(model.parameters()).device
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
@@ -109,14 +123,21 @@ def train_sft(model, batches: Sequence[Sequence[Example]], cfg: Dict, seed: int,
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     total = len(batches); save_at = set(save_at_steps)
     mcfg = model.cfg.to_dict()
-    tokens = sup = 0; t0 = time.time(); rows = []
+    tokens = sup = 0; t0 = time.time(); rows = []; rl_sum, rl_n = 0.0, 0
     model.train()
     for step, batch in enumerate(batches):
         x, y = collate(batch, device)
         for g in opt.param_groups:
             g["lr"] = lr_at(step, cfg)
+        rp = replay(step, model) if replay is not None else None
+        model.train()
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
             _, loss = model(x, y)
+            rl = replay_loss(model, rp[0], rp[1], device) if rp and rp[0] else None
+        sft_l = loss
+        if rl is not None:
+            loss = loss + beta * rl
+            rl_sum += rl.item(); rl_n += 1
         if not torch.isfinite(loss):
             raise RuntimeError(f"non-finite loss at step {step}")
         opt.zero_grad(set_to_none=True)
@@ -127,16 +148,19 @@ def train_sft(model, batches: Sequence[Sequence[Example]], cfg: Dict, seed: int,
         done = step + 1
         tokens += int((x != PAD_ID).sum()) + len(batch); sup += int((y != -100).sum())
         if done % cfg.get("log_every_steps", 50) == 0 or done == total:
-            rows.append({"step": done, "loss": round(loss.item(), 4), "lr": opt.param_groups[0]["lr"],
+            rows.append({"step": done, "loss": round(sft_l.item(), 4), "replay_loss": round(rl_sum / rl_n, 4) if rl_n else None,
+                         "lr": opt.param_groups[0]["lr"],
                          "grad_norm": round(gn, 3), "tokens": tokens, "supervised_tokens": sup,
                          "minutes": round((time.time() - t0) / 60, 2)})
-            log(f"  step {done:>5}/{total} | loss {rows[-1]['loss']:.4f} | lr {rows[-1]['lr']:.1e} | grad {gn:.2f}")
+            log(f"  step {done:>5}/{total} | SFT loss {rows[-1]['loss']:.4f}"
+                + (f" | replay loss {rows[-1]['replay_loss']:.4f}" if rl_n else "") + f" | lr {rows[-1]['lr']:.1e} | grad {gn:.2f}")
+            rl_sum, rl_n = 0.0, 0
         if done in save_at:
             save_weights(model, out / f"step_{done}.pt", mcfg, {"step": done, "total_steps": total, "seed": seed})
     save_weights(model, out / "final.pt", mcfg, {"step": total, "total_steps": total, "seed": seed})
     import pandas as pd
     pd.DataFrame(rows).to_csv(out / "train_log.csv", index=False)
-    summ = {"seed": seed, "updates": total, "save_at_steps": sorted(save_at), "tokens": tokens, "supervised_tokens": sup,
+    summ = {"seed": seed, "updates": total, "beta": beta, "save_at_steps": sorted(save_at), "tokens": tokens, "supervised_tokens": sup,
             "minutes": round((time.time() - t0) / 60, 2), "config": {k: (list(v) if isinstance(v, tuple) else v) for k, v in cfg.items()}}
     json.dump(summ, open(out / "summary.json", "w"), indent=1)
     return summ
