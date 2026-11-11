@@ -316,3 +316,36 @@ P6 E4 OPR-adapted: current model re-scores the pool every 100 updates; keep prom
 P7 L = L_SFT + beta * L_replay; beta from {0.1, 0.3, 1, 3} on validation with E2 random seed 11: smallest beta within
    0.01 AUROC of the best; fixed for all arms.
 P8 Notebook 08 = validation only (preliminary); notebook 09 opens test once for all arms with the claim rule fixed in advance.
+
+========================================
+22. NOTEBOOK 08 RESULT (Phase 6 validation, Kaggle run Nov 11 2026) — all validity checks PASS
+========================================
+Pool 4,098 half-B prompts (50,751 tokens; CALL 19.0 %); tau 2.002; each arm selects 12,687 tokens, replays 300,005-300,017.
+Beta (E2 seed 11, val AUROC): 0.1 0.8167 | 0.3 0.8179 | 1 0.8226 | 3 0.8205 -> beta 0.1. Replay loss reaches ~0 by step 500
+for every static arm (each of ~1,000 distinct prompts is replayed ~24 times).
+Validation AUROC vs frozen labels (seed 11 / 29); E0 0.838, E1 0.701 / 0.707:
+  E2 random 0.817 / 0.804 | E3 CASR 0.797 / 0.794 (default call 55 / 57 %) | E4 OPR 0.823 / 0.824
+  E5 BPR 0.639 / 0.692 (default call 3.5 / 3.9 %) | E6 benefit 0.774 / 0.794 | E7 UABR 0.698 / 0.731 (default call 5.4 / 6.2 %)
+Reading: every arm except BPR and UABR recovers most of the lost AUROC; the two margin-driven arms (BPR, UABR) recover
+none or little and push the default decision toward ANSWER. Same direction as uabr-slm-main Phase 6 (UABR < random).
+Closed / evidence EM stay collapsed in every arm (2.7-5.8 % / 4.2-6.9 %).
+
+========================================
+23. EXTENSION: SELF-RAG-ADAPTED CRITIQUE TOKEN (notebook 10; team decisions Nov 11 2026, before any result)
+========================================
+Kept: [Retrieve] (= existing router) and [IsRel] (new tokens <REL>/<IRR>, ids 12000/12001, appended; tokenizer file
+unchanged); [IsSup] merged into IsRel; [IsUse] dropped. Critique slot = end of the single-window evidence prompt
+(<USER> q<ASSISTANT><CALL><EVIDENCE> w</EVIDENCE>), scored as z_REL - z_IRR, never generated (answer format unchanged).
+S1 Training questions: half B (not half A: theta0 memorised half-A answers). Non-overlapping top-10 windows; label =
+   subject AND gold alias (auto proxy, G2 precision 79 % / recall 81 %); all positives + 3 negatives each (half hard).
+S2 Trainable: transformer body + the 2 new rows; old embedding rows frozen; half-A Q&A replay + half-B router replay.
+   Checkpoint = best critique AUROC on 300 val questions not in G2, among checkpoints with closed EM within 1 pp and
+   routing AUROC within 0.01 of theta_route. Gate G10 on 500 other val questions (closed + evidence EM, full-val routing).
+S3 RQ-S1 comparator = best ANSWER-FREE baseline (BM25 score/rank, subject mention, own article, lexical LR,
+   theta_route hidden probe; chosen on the selection subset). The gold-using rule is a label-quality reference only.
+   Rule: PASS iff critic - best baseline on G2 has clustered 95 % CI lower bound > 0.
+S4 G2 labels are AI-drafted: used now; the team's 50-row blind check (Cohen's kappa) must be done before reporting.
+RQ-S2 (per-window selection: a top-3 concat, b max P(REL) of top-5, b2 gated closed-book if max P(REL) < 0.5,
+c baseline selection, c1 BM25 top-1, d best-of-5) computed always, interpreted only if RQ-S1 passes.
+RQ-S3: 07 SFT recipe from the critic (seeds 11, 29); IsRel vs routing AUROC drop, flips by margin.
+Notebook 09 (test) still waits for the 08b decision (methods A/B/C).
