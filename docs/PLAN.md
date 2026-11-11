@@ -283,3 +283,36 @@ checkpoint (A3b); (3) instruction rows stating a val/test PopQA fact (subject AN
 token budget is filled (sft_overlap_audit.csv). A4: flips by pre-SFT margin quintile at boundary 0 (m_i = |z_C - z_A|)
 and at the frozen 10 % threshold, AUROC(-m -> flip), A->C / C->A counts. A5: emission rate, P(<ANSWER>)+P(<CALL>),
 action-token rank, two-way AUROC, re-tuned 10 % threshold.
+
+========================================
+20. NOTEBOOK 07 RESULT (Phase 5 pilot, Kaggle run Nov 11 2026, code 9262cb421a)
+========================================
+SFT: 34,884 examples, 6,000,100 tokens, 1,091 updates per seed (~7.2 min); 1,742 instruction rows removed by the overlap
+audit (234 val/test facts). Instruction val loss 2.989 -> 2.383 / 2.385 (SFT learned). 0 % point = 06 router exactly.
+100 % minus 0 % (1,754 val questions, clustered paired bootstrap):
+  seed 11: AUROC -0.137 [-0.170, -0.108] | acc@10% re-picked -0.132 [-0.146, -0.115] | acc@10% frozen -0.132 [-0.148, -0.114]
+  seed 29: AUROC -0.132 [-0.163, -0.101] | acc@10% re-picked -0.128 [-0.144, -0.113] | acc@10% frozen -0.128 [-0.145, -0.112]
+DECISION: GO (AUROC alone is significant in both seeds). AUROC 0.838 -> 0.701 / 0.707.
+CAVEAT: SFT also collapsed the answer paths (closed EM 11.3 -> 1.5 / 1.9 %, evidence EM 22.2 -> 2.3 / 3.4 %), so the
+accuracy drops mostly measure answer damage, not routing; AUROC vs frozen labels is the clean retention measure.
+A4 supported: AUROC(-m -> flip) at 100 % 0.741 [0.716, 0.766] / 0.765 [0.735, 0.792]; flips mostly ANSWER -> CALL
+(333 vs 67; 234 vs 75). Default call rate 12.9 % -> 28.1 / 21.9 %.
+
+========================================
+21. PHASE 6 DESIGN (team decisions, Nov 11 2026, before any Phase 6 result)
+========================================
+07 check: post-SFT answers are sentences ("X is a Japanese actress and model"); of the 199 closed-book / 390 evidence
+questions correct at 0 %, only 18.6 % / 23.1 % still contain the old answer at 100 % -> SFT really damages answering, not
+only the format. Overlap audit (1,742 rows) is mostly generic subjects ("Day", "Boston", "Time"); removal kept.
+P1 Replay examples are ACTION-TOKEN ONLY (2-logit CE at <ASSISTANT>, target = frozen theta0 label y).
+P2 Primary endpoint = routing AUROC vs frozen theta0 labels (A3a) + decision agreement with E0; fresh-reward utility
+   (EM and answer-containment) secondary (A3b).
+P3 Budget as uabr-slm-main: select distinct examples worth 25 % of the pool tokens, cycle to 5 % of instruction tokens
+   (spread evenly over the 1,091 updates). Pool = half-B questions, scored once with theta_route,preSFT.
+P4 Same ANSWER:CALL token share for every arm (= pool share); methods rank within each class.
+P5 E3 Hybrid-CASR-adapted uncertainty = theta0's closed-book first-token entropy (router entropy would equal BPR).
+P6 E4 OPR-adapted: current model re-scores the pool every 100 updates; keep prompts whose current decision (boundary 0)
+   equals y; random selection at the same budget/ratio.
+P7 L = L_SFT + beta * L_replay; beta from {0.1, 0.3, 1, 3} on validation with E2 random seed 11: smallest beta within
+   0.01 AUROC of the best; fixed for all arms.
+P8 Notebook 08 = validation only (preliminary); notebook 09 opens test once for all arms with the claim rule fixed in advance.
