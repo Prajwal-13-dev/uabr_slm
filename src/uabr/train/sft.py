@@ -106,10 +106,12 @@ def replay_loss(model, prompts, targets, device):
 
 
 def train_sft(model, batches: Sequence[Sequence[Example]], cfg: Dict, seed: int, out_dir, save_at_steps=(),
-              log=print, replay=None, beta: float = 0.0) -> Dict:
+              log=print, replay=None, beta: float = 0.0, aux=None, gamma: float = 0.0) -> Dict:
     """One pass over pre-built batches. Writes step_{N}.pt at save_at_steps, final.pt, train_log.csv, summary.json.
     replay(step, model) -> (prompts, targets) adds beta * replay_loss for that update (Phase 6 arms); the update
-    count and the instruction batches are unchanged."""
+    count and the instruction batches are unchanged.
+    aux(step, model, x, logits) -> loss tensor adds gamma * aux loss (notebook 12 anchoring); it receives the SFT
+    batch inputs and the student logits of the same forward pass."""
     out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
     device = next(model.parameters()).device
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
@@ -123,7 +125,7 @@ def train_sft(model, batches: Sequence[Sequence[Example]], cfg: Dict, seed: int,
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     total = len(batches); save_at = set(save_at_steps)
     mcfg = model.cfg.to_dict()
-    tokens = sup = 0; t0 = time.time(); rows = []; rl_sum, rl_n = 0.0, 0
+    tokens = sup = 0; t0 = time.time(); rows = []; rl_sum, rl_n = 0.0, 0; al_sum, al_n = 0.0, 0
     model.train()
     for step, batch in enumerate(batches):
         x, y = collate(batch, device)
@@ -131,10 +133,19 @@ def train_sft(model, batches: Sequence[Sequence[Example]], cfg: Dict, seed: int,
             g["lr"] = lr_at(step, cfg)
         rp = replay(step, model) if replay is not None else None
         model.train()
+        al = None
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
-            _, loss = model(x, y)
+            if aux is None:
+                _, loss = model(x, y)
+            else:
+                logits, _ = model(x)
+                loss = torch.nn.functional.cross_entropy(logits.float().reshape(-1, logits.size(-1)), y.reshape(-1), ignore_index=-100)
+                al = aux(step, model, x, logits)
             rl = replay_loss(model, rp[0], rp[1], device) if rp and rp[0] else None
         sft_l = loss
+        if al is not None:
+            loss = loss + gamma * al
+            al_sum += al.item(); al_n += 1
         if rl is not None:
             loss = loss + beta * rl
             rl_sum += rl.item(); rl_n += 1
@@ -149,18 +160,20 @@ def train_sft(model, batches: Sequence[Sequence[Example]], cfg: Dict, seed: int,
         tokens += int((x != PAD_ID).sum()) + len(batch); sup += int((y != -100).sum())
         if done % cfg.get("log_every_steps", 50) == 0 or done == total:
             rows.append({"step": done, "loss": round(sft_l.item(), 4), "replay_loss": round(rl_sum / rl_n, 4) if rl_n else None,
+                         "aux_loss": round(al_sum / al_n, 5) if al_n else None,
                          "lr": opt.param_groups[0]["lr"],
                          "grad_norm": round(gn, 3), "tokens": tokens, "supervised_tokens": sup,
                          "minutes": round((time.time() - t0) / 60, 2)})
             log(f"  step {done:>5}/{total} | SFT loss {rows[-1]['loss']:.4f}"
-                + (f" | replay loss {rows[-1]['replay_loss']:.4f}" if rl_n else "") + f" | lr {rows[-1]['lr']:.1e} | grad {gn:.2f}")
-            rl_sum, rl_n = 0.0, 0
+                + (f" | replay loss {rows[-1]['replay_loss']:.4f}" if rl_n else "")
+                + (f" | anchor loss {rows[-1]['aux_loss']:.5f}" if al_n else "") + f" | lr {rows[-1]['lr']:.1e} | grad {gn:.2f}")
+            rl_sum, rl_n = 0.0, 0; al_sum, al_n = 0.0, 0
         if done in save_at:
             save_weights(model, out / f"step_{done}.pt", mcfg, {"step": done, "total_steps": total, "seed": seed})
     save_weights(model, out / "final.pt", mcfg, {"step": total, "total_steps": total, "seed": seed})
     import pandas as pd
     pd.DataFrame(rows).to_csv(out / "train_log.csv", index=False)
-    summ = {"seed": seed, "updates": total, "beta": beta, "save_at_steps": sorted(save_at), "tokens": tokens, "supervised_tokens": sup,
+    summ = {"seed": seed, "updates": total, "beta": beta, "gamma": gamma, "save_at_steps": sorted(save_at), "tokens": tokens, "supervised_tokens": sup,
             "minutes": round((time.time() - t0) / 60, 2), "config": {k: (list(v) if isinstance(v, tuple) else v) for k, v in cfg.items()}}
     json.dump(summ, open(out / "summary.json", "w"), indent=1)
     return summ

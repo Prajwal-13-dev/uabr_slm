@@ -388,3 +388,49 @@ RQ-S3 (critic model, 100 % minus 0 %): IsRel G2 -0.109 [-0.156, -0.065] (s11), -
     AUROC >= E0 - 0.02) with SFT gain kept, and routing AUROC at the smallest alpha keeping >= 90 % of the SFT loss gain.
 (6) Threshold recalibration on n = 50/100/200/500 labelled half-B questions (5 draws; max balanced accuracy) vs default 0
     vs re-fitted probe with the same labels: balanced accuracy, call rate, agreement with E0, utility with theta0 rewards.
+
+========================================
+26. NOTEBOOK 11 RESULT, part 1 (Kaggle run Nov 12 2026) — status PASS (all consistency checks)
+========================================
+Interpolation theta_route -> E1 (seed 11 / 29; EM on 500 val questions; E0: AUROC 0.838, loss 2.989, closed 9.4 %, evidence 17.6 %):
+  alpha 0.4: AUROC 0.829 / 0.828 | loss 2.605 (63 % of SFT gain) | closed 10.2 / 10.8 % | evidence 18.4 / 18.8 %
+  alpha 0.5: AUROC 0.822 / 0.821 | loss 2.541 (74 %)               | closed 10.0 / 10.2 % | evidence 17.6 / 17.6 %   <- alpha*
+  alpha 0.7: AUROC 0.790 / 0.789 | loss 2.446 (90 %)               | closed 5.8 / 6.0 %   | evidence 13.0 / 12.4 %
+  alpha 0.8: AUROC 0.765 / 0.766 | loss 2.415 (95 %)               | closed 3.2 / 3.6 %
+  alpha 1.0: AUROC 0.701 / 0.707 | loss 2.383 / 2.385              | closed 0.6 / 1.0 %   | evidence 1.0 / 2.0 %
+  SFT gain is front-loaded in alpha, damage back-loaded: answering and routing hold up to alpha ~0.5.
+Task vector E1 + beta (theta_route - theta0): beta 1: AUROC 0.812 / 0.809, loss 2.401 / 2.402 (97 % of SFT gain), closed
+  3.8 / 4.4 %; beta 0.5: AUROC 0.779 / 0.779. No training, close to random replay (08 E2: 0.817 / 0.804); answers not restored.
+Critic interpolation (IsRel G2 / routing / loss; alpha 0 = 0.872 / 0.819 / 3.081): alpha 0.4: 0.866 / 0.818 / 2.619 (66 %);
+  0.6: 0.845 / 0.798 / 2.494 (84 %); 1.0: 0.762 / 0.682 / 2.385 (s11).
+Readout (1) and recalibration (6) tables: in the output CSVs (not in the log).
+Part 2 — readout vs representation (1) and recalibration (6):
+Routing (val AUROC): token 0.838 -> 0.701 / 0.707; probe re-fitted on half-B hidden states 0.788 (pre) -> 0.789 / 0.791 (post);
+  pre-SFT probe applied unchanged after SFT 0.51 / 0.51 (0.42-0.43 at 25-50 %). Recovered share 0.64 / 0.64 -> "mixed" by the
+  fixed rule. But probe_pre - probe_post = -0.001 / -0.003: everything a re-fitted linear probe can read before SFT is still
+  there after SFT; the unrecovered part is the probe's lower ceiling (0.788 < token 0.838; probe trained on the router's own
+  training questions). The decision information moved to a new direction (frozen probe ~chance) and the token readout did
+  not follow. Label budget: post-SFT probe 0.67-0.68 with <= 200 labels, 0.73 with 500-1,000, 0.79 with all 4,098 (pre-SFT
+  probe ~0.78 already at 50) -> recoverable, but not cheaply.
+IsRel (G2 / val auto): token 0.872 / 0.867 -> 0.763-0.750 / 0.763-0.756; re-fitted probe 0.863 / 0.868 -> 0.833-0.837 /
+  0.844; recovered 0.64-0.72 (G2), 0.78-0.79 (val) -> "mixed", mostly readout; small real loss (probe drop 0.026-0.030 G2,
+  0.024 val). Post-SFT re-fitted probe still below the answer-free lexical baseline on G2 (0.851).
+Recalibration (balanced-accuracy threshold): E1 balanced accuracy 0.633 / 0.628 (default 0) -> 0.633-0.650 with 50-500
+  labels; oracle threshold on val only 0.653 / 0.660 (E0 default 0.652, E0 oracle 0.780). Utility with theta0 rewards gets
+  WORSE (call rate jumps to 40-57 %). Re-fitted probe + threshold: 0.60-0.67. -> Threshold recalibration cannot repair the
+  damage (independent confirmation of the Phase 5 GO). Caveat: the balanced-accuracy objective favours high call rates.
+
+========================================
+27. NOTEBOOK 12 DESIGN: new methods (team decision Nov 12 2026, before any result)
+========================================
+0  Check: 5-fold GroupKFold logistic probe on the validation questions' own hidden states (E0, E1 s11/s29); recovered share
+   with this ceiling, notebook 11 rule.
+A1 SFT-prompt anchoring: 07 SFT recipe + gamma * softBCE(sigmoid(d_student), sigmoid(d_teacher)) at <ASSISTANT> of every SFT
+   example (d = z_CALL - z_ANSWER; teacher = frozen theta_route). No labels, no extra data.
+A2 Question-pool anchoring: same loss on 16 random half-B question prompts per update (teacher scores precomputed). No labels.
+A2-critic: A2 from the notebook 10 critic, anchoring routing (half-B questions) and IsRel (half-B windows) slots, 16 + 16.
+B  Readout repair of the 07 SFT models: only <ANSWER>/<CALL> embedding rows + final RMSNorm gain train (2-logit CE, half-B
+   labels, lr 1e-3, 3 epochs) + SFT replay; best selection-subset AUROC with instruction val loss <= E1 + 0.02.
+gamma = 1 fixed (not tuned). Selection subset 300 val questions (B only); results on the other 1,454 val questions (EM on
+500); references rebuilt on the same questions: E0, E1, interpolation alpha 0.5, task vector beta 1. Primary: routing AUROC
+vs frozen labels; paired clustered bootstrap vs E1 / interpolation / task vector per seed; A2-critic vs critic-SFT on IsRel.
