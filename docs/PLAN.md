@@ -434,3 +434,52 @@ B  Readout repair of the 07 SFT models: only <ANSWER>/<CALL> embedding rows + fi
 gamma = 1 fixed (not tuned). Selection subset 300 val questions (B only); results on the other 1,454 val questions (EM on
 500); references rebuilt on the same questions: E0, E1, interpolation alpha 0.5, task vector beta 1. Primary: routing AUROC
 vs frozen labels; paired clustered bootstrap vs E1 / interpolation / task vector per seed; A2-critic vs critic-SFT on IsRel.
+
+========================================
+28. NOTEBOOK 12 RESULT, part 1 (Kaggle run Nov 12 2026) — status PASS
+========================================
+Routing on the 1,454 evaluation questions (AUROC [95% CI] | default call | instruction val loss | closed / evidence EM, 500 q):
+  E0            0.834 [0.812, 0.857] | 12.9 % | 2.989 | 12.0 / 21.6 %
+  E1 s11 / s29  0.689 / 0.696        | 28.1 / 21.8 % | 2.383 / 2.385 | 1.0-1.4 / 2.4-3.2 %
+  A1 (SFT-prompt anchoring, no labels, no data)   0.827 / 0.827 | 9.1 / 13.3 % | 2.388 / 2.390 | 1.2-1.8 / 4.4-7.2 %
+  A2 (question-pool anchoring, no labels)         0.832 / 0.836 | 10.9 / 13.6 % | 2.387 / 2.388 | 4.4-4.8 / 8.6-9.6 %
+  B  (readout repair: 2 rows + norm gain)         0.804 / 0.810 | 10.5 / 11.4 % | 2.383 / 2.384 | 2.2-3.0 / 2.2-3.2 %
+  interpolation alpha 0.5                         0.815 / 0.814 | 14.9 / 12.5 % | 2.541 / 2.542 | 11.2-11.4 / 21.2-21.4 %
+  task vector beta 1                              0.807 / 0.805 | 17.5 / 15.1 % | 2.401 / 2.402 | 4.6 / 11.4-11.6 %
+Reading: A2 keeps the pre-SFT routing AUROC (0.834) with the full SFT gain and no labels; A1 nearly does with no extra data
+at all. Both beat interpolation / task vector / readout repair on routing, and are above 08 random replay (0.817 / 0.804,
+full val) - soft teacher targets instead of hard labels. Answering stays collapsed under anchoring (only interpolation keeps it).
+B selection: best steps 325 / 375 (selection AUROC 0.852 / 0.855), instruction loss unchanged.
+CV-probe check, critic (A2c) results and paired CIs: in the output CSVs.
+Part 2:
+Paired clustered bootstrap (routing AUROC, evaluation questions; seed 11 | seed 29), all CIs exclude 0 unless marked n.s.:
+  A1 - E1 +0.139 | +0.130 ; A1 - interp0.5 +0.012 [+0.001, +0.023] | +0.012 [+0.001, +0.023] ; A1 - taskvec +0.020 | +0.021
+  A2 - E1 +0.143 | +0.140 ; A2 - interp0.5 +0.017 [+0.007, +0.025] | +0.021 [+0.012, +0.032] ; A2 - taskvec +0.024 | +0.031
+  B  - E1 +0.116 | +0.114 ; B - interp0.5 -0.011 n.s. | -0.004 n.s. ; B - taskvec -0.003 n.s. | +0.005 n.s.
+Agreement with E0 decisions: A2 0.95, A1 0.92-0.93, interp 0.93, taskvec 0.90-0.91, B 0.89-0.90, E1 0.77-0.83.
+SFT gain kept: A2 99.4 %, A1 99.2 %, B 100 %, taskvec 97 %, interp 74 %.
+Critic (IsRel G2 / IsRel val / routing / instr loss): critic 0.872 / 0.867 / 0.812 / 3.081; critic-SFT 0.763-0.750 / 0.763-0.756
+  / 0.662-0.674 / 2.386; A2-critic 0.883 / 0.870 (s11), 0.881 / 0.874 (s29) / 0.827, 0.813 / 2.409. A2c - critic-SFT on IsRel
+  G2 +0.121 [+0.072, +0.167] | +0.131 [+0.085, +0.181]; val +0.107 | +0.118. Both decision tokens kept at once.
+CV-probe check: E0 0.770, E1 0.781 / 0.778 (no loss of linearly decodable information; drop -0.011 / -0.008). Recovered share
+  0.58 / 0.54 -> "mixed" by the fixed rule, because the CV probe ceiling (0.77) is below the trained token (0.838). Supporting
+  (not preregistered): in-model readout repair B recovers 79 % / 83 % of the AUROC drop.
+
+========================================
+29. TEST PRE-REGISTRATION (notebook 09; fixed Nov 12 2026, before any test number was seen)
+========================================
+Test set: in_main PopQA test questions; frozen theta0 labels y from notebook 06 (lambda 0.1875), unused until now.
+Models (seeds 11, 29): E0, E1 (07); A1, A2 (12); replay E2-E7 (08); interpolation alpha 0.5 and task vector beta 1 (rebuilt
+from checkpoints; included only as comparators required by the primary family); critic, critic-SFT (10), A2-critic (12).
+Readout repair B is NOT scored on test (team choice).
+Primary endpoint: routing AUROC vs frozen labels on test.
+Primary family: A2 and A1 each vs E1, interpolation 0.5, task vector 1, E2 random, E7 UABR.
+Original hypothesis (reported): E7 UABR vs E1, E2 random, E5 BPR. Descriptive: E2-E6 vs E1.
+Critic family: A2-critic vs critic-SFT on IsRel AUROC (test windows: non-overlapping top-5, automatic labels).
+Test: paired subject-clustered bootstrap, 2,000 resamples, 95 % CI, per seed. Claim rule: BETTER only if the CI excludes 0 in
+favour in BOTH seeds; one seed = suggestive; excludes 0 against in both = WORSE; otherwise no difference detected. No
+multiplicity correction (the both-seed rule is the guard).
+Secondary (no claims): AUPRC, default call rate, agreement with E0, instruction val loss / SFT gain kept, utility at 10 %
+budget (theta0 and fresh rewards), fresh closed / evidence EM.
+Procedure: validation integrity checks (E0 = 06, E1 = 07, E7 = 08, A2 = 12, interp = 12) must pass before the test cells.
+The notebook is run once; a re-run is allowed only after a crash and must be reported.
