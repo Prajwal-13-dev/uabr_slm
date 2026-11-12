@@ -349,3 +349,42 @@ RQ-S2 (per-window selection: a top-3 concat, b max P(REL) of top-5, b2 gated clo
 c baseline selection, c1 BM25 top-1, d best-of-5) computed always, interpreted only if RQ-S1 passes.
 RQ-S3: 07 SFT recipe from the critic (seeds 11, 29); IsRel vs routing AUROC drop, flips by margin.
 Notebook 09 (test) still waits for the 08b decision (methods A/B/C).
+
+========================================
+24. NOTEBOOK 10 RESULT (Kaggle run Nov 12 2026, code 7e272d955b) — status FAIL (G10)
+========================================
+Data: 40,878 half-B windows (10.8 % relevant) -> 17,724 training windows; 1 window dropped (too long); G2 597 windows / 199
+questions (100 relevant), text identical to the audit; auto rule vs G2: precision 79.4 %, recall 81.0 %.
+Best answer-free baseline (selection subset): lexical LR 0.870 (subject mention 0.864, hidden probe 0.853, BM25 0.794).
+Critic: best qualifying step 600 (selection AUROC 0.875); val auto AUROC 0.867.
+G10 FAIL: routing AUROC 0.8384 -> 0.8190 (-0.019, tolerance 0.01); closed 11.8 -> 12.4 %, evidence 23.6 -> 25.2 % (fine).
+The 300-question selection check (-0.0085) did not catch the full-validation drop; routing AUROC fell steadily with training.
+RQ-S1 NOT SUPPORTED: critic - lexical LR on G2 +0.021 [-0.023, +0.066]; val auto +0.008 [-0.008, +0.025].
+  Gold-using rule on G2 AUROC 0.884 (reference). Shortcut subset (114 answer-present windows, 32 not stating the fact):
+  critic 0.761 vs lexical 0.733 (no CI). Uncertain G2 windows dropped: critic 0.896.
+RQ-S2 (not interpreted per rule): critic selection - top-3 concat -3.92 pp [-5.83, -2.14]; critic - baseline selection
+  +0.69 pp [-0.68, +2.08]; gated -6.05 pp [-7.92, -4.16] (closed-book chosen for 68 %).
+RQ-S3: SFT runs done (1,091 updates each); table in rq_s3_retention.csv (not in the log).
+RQ-S1 tables (G2 / val auto AUROC): critic 0.872 [0.830, 0.908] / 0.867; lexical LR 0.851 / 0.860; own article 0.842 / 0.825;
+  subject mention 0.832 / 0.855; hidden probe 0.832 / 0.840; BM25 score 0.802 / 0.795; BM25 rank 0.556 / 0.601.
+RQ-S2 EM: top-3 concat 23.2 % | critic select 19.3 % | gated 17.1 % | baseline select 18.6 % | BM25 top-1 16.8 % |
+  best-of-5 27.2 % (headroom +4 pp not captured). Retrieval damage 1.3 % (concat) vs 4.3 % (critic select).
+RQ-S3 (critic model, 100 % minus 0 %): IsRel G2 -0.109 [-0.156, -0.065] (s11), -0.122 [-0.168, -0.078] (s29);
+  IsRel val -0.104 / -0.111; routing -0.137 [-0.171, -0.104] / -0.127 [-0.162, -0.094].
+  Share of above-chance skill lost: IsRel 28-33 %, routing 40-43 %. After SFT the critic (0.75-0.76) falls BELOW the
+  answer-free lexical baseline (0.85). Default positive rate: IsRel stable (14.6 -> 13 %), routing drifts 11.6 -> 39 / 30 %.
+  Small margin predicts flips: IsRel AUROC 0.83-0.87, routing 0.67-0.71.
+
+========================================
+25. NOTEBOOK 11 DESIGN: post-hoc analyses, no training (team decision Nov 12 2026, before any result)
+========================================
+(1) Readout vs representation: hidden state h (post-RMSNorm) at the decision slot; token score = h.(e_CALL - e_ANSWER) is a
+    fixed linear readout (tied embeddings). Compare token vs linear probe re-fitted on post-SFT h (half-B labels ->
+    validation) vs the pre-SFT probe applied unchanged; label-budget curve 50..all. Same for IsRel (critic; half-B windows
+    -> G2 / validation windows). Rule: recovered share = (probe_post - token_post)/(token_pre - token_post) >= 0.8
+    readout-dominated, <= 0.2 representation-dominated, else mixed (n/a if damage < 0.02). Secondary: probe_pre - probe_post.
+(2) Weight interpolation theta_route -> theta_SFT (alpha 0..1 step 0.1, per seed) and task vector theta_SFT + beta
+    (theta_route - theta0), beta 0.5 / 1; critic interpolation alpha 0..1 step 0.2. Report alpha* (largest alpha with routing
+    AUROC >= E0 - 0.02) with SFT gain kept, and routing AUROC at the smallest alpha keeping >= 90 % of the SFT loss gain.
+(6) Threshold recalibration on n = 50/100/200/500 labelled half-B questions (5 draws; max balanced accuracy) vs default 0
+    vs re-fitted probe with the same labels: balanced accuracy, call rate, agreement with E0, utility with theta0 rewards.
