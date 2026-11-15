@@ -1,0 +1,496 @@
+# Results log
+
+One entry per phase gate. Numbers are copied from the notebook output of the run named in each entry.
+
+## Phase 1: model code, GPU smoke run, resume
+
+**Run:** `notebooks/phase1_setup_and_smoke.ipynb` on Kaggle, GPU T4 (1 of 2 used), FP16 AMP. 27 Oct 2026.
+**Gate: PASSED**
+
+| Check | Result |
+|---|---|
+| Parameters | 39,707,136 |
+| Training loss, step 20 → 300 (synthetic data, ideal ln 4 ≈ 1.39) | 7.82 → 1.51 |
+| Validation loss at steps 100 / 200 / 300 | 1.755 / 1.569 / 1.532 |
+| Non-finite loss | none |
+| Resume continuity (restart from persistent copy) | step 300: 1.515 → step 310: 1.488 |
+| Throughput, eager | 38,376 tokens/s |
+| Throughput, `--compile` | 54,468 tokens/s (1.42×), identical loss at step 200 (1.5663) |
+| Peak GPU memory | 8.02 GB |
+| 1B-token pretraining estimate | 5.9 h with `--compile` (one Kaggle session) |
+
+Decision: use `--compile` for every pretraining and resume command.
+
+## Phase 2: data_v1
+
+**Run:** `notebooks/phase2_build_data.ipynb` on Kaggle CPU, `QUICK = False` (Kaggle notebook `uabr-p2-data`, version 2). 30 Oct 2026.
+**Gate: PASSED**
+
+| Item | Result |
+|---|---|
+| Answer vocabulary source | Wikidata (live SPARQL, not the fallback lists) |
+| Facts | 12,000 pseudonymous entities × 3 relations = 36,000 facts; ~50% exposed (5 / 20 / 80 statements), ~50% withheld |
+| Fact statements | 624,565 statements, ~9.4M tokens (< 1% of the corpus) |
+| Pretraining tokens | 1,005,000,040 (reached target) |
+| Instruction SFT data | Dolly-15k + Alpaca-cleaned, 6.0M tokens, ~34.8k examples; 500 held out for validation |
+| Tokenizer | Byte-level BPE, 12,000 tokens, special tokens at IDs 0–9; ~3.6 characters per token on Wikipedia |
+| Ledger audits | 6 / 6 PASS (duplicate facts, prompt overlap, class balance, evidence, aliases, leakage) |
+
+## Phase 3: base_v1
+
+**Run:** `notebooks/phase3_pretrain.ipynb` on Kaggle GPU T4, `QUICK = False` (Kaggle notebook `uabr-p3-pretrain`). 30–31 Oct 2026, one session, 5.2 h.
+**Gate: PASSED**
+
+| Item | Result |
+|---|---|
+| Steps / tokens | 15,260 / 1,000,079,360 (one pass over data_v1) |
+| Throughput | ~54,000 tokens/s with `--compile`, no NaN, peak memory 5.2 GB |
+| Validation loss | 4.458 (step 500) → 3.349 (2k) → 3.080 (5k) → 2.896 (10k) → **2.814** (15k), perplexity 16.7 |
+| Final training loss | 2.738 (train and validation curves stay together: no overfitting) |
+| Checkpoint | `base_v1.pt`, 159 MB |
+
+**Fact probe** (cloze prompt, greedy exact match, 300 facts per tier):
+
+| Exposure | 0 (withheld) | 5× | 20× | 80× |
+|---|---|---|---|---|
+| Exact match | 0.050 | 0.073 | 0.183 | **0.750** |
+| Mean gold log-prob | −5.37 | −4.73 | −3.30 | −1.24 |
+
+By relation at 80×: occupation 0.95, citizen_of 0.89, language 0.88, born_in 0.57, birth_year 0.44. Withheld facts are at
+the guessing floor (~5%), 80× facts are mostly stored, and the 20× tier is partly known, so real examples fall on both
+sides of the answer-or-call boundary, as the design intended.
+
+## Phase 4: delegation_v1
+
+### Attempt 1: bare answer format (gate NOT passed)
+
+**Run:** `notebooks/phase4_delegation.ipynb`, `QUICK = False` (Kaggle notebook `uabr-p4-delegation`). 31 Oct 2026. 29 tests passed.
+
+Knowledge labels from `base_v1` (cloze probe), share labelled ANSWER:
+
+| Split | 0 | 5× | 20× | 80× |
+|---|---|---|---|---|
+| delegation_train | 0.036 | 0.070 | 0.216 | 0.747 |
+| dev | 0.040 | 0.046 | 0.218 | 0.759 |
+| replay_construction | 0.034 | 0.077 | 0.225 | 0.728 |
+
+Training: 3 epochs × 40,776 examples (50% ANSWER), 1,914 updates. Dev routing AUROC by epoch: 0.586 → 0.584 → 0.491;
+training loss reached 0.0003 (the model memorised the training entities). Best checkpoint (epoch 1) on all 7,200 dev prompts:
+
+| Measure | Value |
+|---|---|
+| Routing AUROC | 0.598 (95% CI 0.574–0.620) |
+| Direct-answer accuracy, facts labelled known / unknown | 0.271 / 0.027 |
+| CALL-path accuracy | 1.000 |
+| Accuracy at 10% call budget | 0.172 |
+| Mutual information | 0.094 bits; 37.8% of prompts within 0.1 of a coin flip |
+| CALL rate by tier (0 / 5 / 20 / 80) | 0.54 / 0.57 / 0.53 / 0.48 |
+| Checks | both_actions, useful_ranking, direct_path, call_path PASS; **decisive_policy, tier_sensitive FAIL** |
+
+**Diagnosis.** The base model stores facts in statement form but cannot retrieve them as answers to questions: direct
+accuracy on 80× facts was 0.19 in question-answer format against 0.75 in the cloze probe. So about 73% of the dev facts
+labelled ANSWER were facts the ANSWER path then got wrong, and the router was trained on labels that disagree with
+the outcome it is scored on. The quick run (47 updates) also showed the value of the anti-cheating checks: three of
+the four original checks passed on a model that was 50/50 on every prompt (mutual information 0.001).
+
+**Change for attempt 2** (made before seeing any attempt-2 result; gate thresholds unchanged):
+1. Recitation answer path: after `<ANSWER>` the system writes the cloze sentence opening (for example "Kael Dorn was
+   born in the city of") and the model completes it. It is the same text as the knowledge probe, so an ANSWER label now
+   means exactly "the ANSWER path will be right". Like the evidence block on the CALL path, the scaffold is masked in
+   training and fed at evaluation; the routing decision comes before it.
+2. Dev check every 200 updates, keeping the best routing AUROC, to stop before memorisation.
+
+### Attempt 2: recitation after `<ANSWER>` (gate NOT passed)
+
+**Run:** same notebook, `QUICK = False`. 31 Oct 2026. 30 tests passed. Same knowledge labels as attempt 1.
+
+Format: `<USER> question<ASSISTANT>` → decision → `<ANSWER> Kael Dorn was born in the city of| Oslo` (recitation
+scaffold fed after the action token). Dev every 200 updates; best routing AUROC 0.645 at update 1,000 (2,000-prompt
+subset). Best checkpoint on all 7,200 dev prompts:
+
+| Measure | Attempt 1 | Attempt 2 |
+|---|---|---|
+| Routing AUROC (95% CI) | 0.598 (0.574–0.620) | 0.621 (0.601–0.640) |
+| Mutual information | 0.094 | **0.235** |
+| Near-coin-flip prompts | 37.8% | 7.0% |
+| Direct-answer accuracy, facts labelled known / unknown | 0.271 / 0.027 | 0.270 / 0.038 |
+| CALL rate by tier (0 / 5 / 20 / 80) | 0.54 / 0.57 / 0.53 / 0.48 | 0.88 / 0.90 / 0.87 / 0.86 |
+| Accuracy at 10% call budget | 0.172 | 0.182 |
+| Failed checks | decisive_policy, tier_sensitive | both_actions_learned, tier_sensitive |
+
+**Diagnosis.** The recitation did not restore recall inside the chat context. Before any training, the base model with
+the scaffold scored 0.053 direct accuracy on dev, against ~0.19 for the same sentence given on its own (the knowledge
+probe). The chat tokens `<USER>`, `<ASSISTANT>` and `<ANSWER>` never occur in pretraining, and placing them in front of
+the recitation disrupts retrieval; delegation training on ~3.4k known facts did not repair it for unseen entities
+(direct accuracy on 80× dev facts 0.186). The router still cannot tell known from unknown facts in that context: the
+CALL rate is flat across tiers.
+
+**Change for attempt 3** (made before seeing any attempt-3 result; gate thresholds unchanged): move the decision to the
+position where the answer word would start, after the recitation, so the action is chosen exactly where the model's
+knowledge of the next word lives. Two formats are trained on the same labels, data and settings:
+
+- `recite`: `<BOS><USER> question<ASSISTANT> Kael Dorn was born in the city of` → `<ANSWER> Oslo` / `<CALL><EVIDENCE> … </EVIDENCE> Oslo`
+- `cloze`: `<BOS>Kael Dorn was born in the city of` → same two actions (exactly the knowledge-probe prefix)
+
+**Selection rule (fixed now):** keep `recite` if its gate passes, because it keeps the chat context that instruction
+tuning acts on; otherwise keep `cloze` if its gate passes; otherwise keep the format with the higher full-dev routing
+AUROC and report Phase 4 as not passing. The choice is written to `delegation_choice.json`.
+
+### Attempt 3: decision at the answer position, `recite` and `cloze` (gate NOT passed)
+
+**Run:** same notebook, `QUICK = False`, 31 Oct 2026. 30 tests passed. Same labels and settings; dev every 200 updates.
+
+| Measure | `recite` | `cloze` |
+|---|---|---|
+| Best dev-subset AUROC (update) | 0.628 (1,200) | 0.609 (400) |
+| Routing AUROC, full dev (95% CI) | 0.634 (0.612–0.657) | 0.634 (0.611–0.656) |
+| Mutual information | 0.202 | 0.145 |
+| Default call rate | 0.955 | 0.760 |
+| Direct-answer accuracy, facts labelled known / unknown | 0.248 / 0.033 | 0.306 / 0.037 |
+| Direct-answer accuracy on 80× facts | — | 0.236 |
+| CALL rate by tier (0 / 5 / 20 / 80) | 0.96 / 0.96 / 0.94 / 0.96 | 0.77 / 0.78 / 0.77 / 0.71 |
+| Accuracy at 10% call budget | 0.173 | 0.187 |
+| Failed checks | both_actions_learned, tier_sensitive | both_actions_learned, tier_sensitive |
+
+**Preregistered choice:** neither passes, so `cloze` (higher full-dev AUROC; tie at three decimals broken by the rule's
+`max`) is kept as `delegation_v1` and Phase 4 is reported as **not passing**.
+
+**Diagnosis across all three attempts.** Routing AUROC stayed at 0.60–0.63 in every format, and the CALL rate never
+separated 80× facts from never-shown facts by more than 0.07. The cleanest evidence is the `cloze` format: its prefix is
+*exactly* the knowledge-probe prompt, on which `base_v1` recalls 75% of 80× facts, yet before any delegation training
+its direct-answer accuracy with `<ANSWER>` inserted before the answer was **0.000**, and after training it reached only
+0.236 on 80× facts. So any special token that never occurred in pretraining (`<USER>`, `<ASSISTANT>`, `<ANSWER>`, `<CALL>`)
+breaks retrieval at the position where it appears, and fine-tuning on ~3.4k known facts memorises the training
+entities (loss → 0.0002) without restoring recall for unseen ones. With recall broken, the model has no internal signal
+of what it knows, and no decision format can fix that from inside Phase 4.
+
+**Consequence.** The fix has to be upstream, in pretraining: the delegation tokens and the question format must be seen
+during pretraining, so they carry trained embeddings and question-format recall exists before Phase 4 starts. This is
+version 2 of the data and base model (the team's plan): question-answer examples in pretraining, fewer facts with more
+repetition, a fallible CALL path, and a 1/10-scale preflight gate before the full pretraining run.
+
+## Version 2: data_v2 and base_v2 (plan, fixed before any version-2 result)
+
+**Why.** Phase 4 attempts 1–3 showed that `base_v1` cannot retrieve its facts in question form or after any special
+token, so no Phase 4 format could give it a working sense of what it knows (see the attempt-3 diagnosis). The fix
+has to be in the data and pretraining. Changes (`src/data/build_facts_v2.py`, `src/retrieval/search.py`):
+
+| | data_v1 | data_v2 |
+|---|---|---|
+| Facts | 12,000 entities × 3 = 36,000 | 2,400 entities × 3 = **7,200** |
+| Taught / never shown | 50% / 50% | **90% / 10%** |
+| Exposure tiers | 5 / 20 / 80 | **40 / 120 / 300** |
+| Exposure form | statements only | **~70% statements + ~30% chat Q&A** in exactly the Phase 4 ANSWER format; the held-out question family never appears |
+| CALL path | the fact's own record, always right | **top-3 keyword search**; 20% of records missing from the index; shared first names give look-alike distractors (~79% of prompts retrieve the right record) |
+| Phase 4 labels | cloze recall | **question-format recall** (the ANSWER path itself); cloze recorded alongside |
+| Phase 4 format | question → recite / cloze | **question** (decision right after `<ASSISTANT>`) |
+| Audits | 6 | 8 (+ retrieval integrity, Q&A hold-out); class-balance minimum 50 (dev holds ~72 withheld facts) |
+
+Gate adjustments that follow from the design, not from results: `call_path_works` is measured on prompts whose
+record is retrieved (a perfect CALL path is impossible by design), and `tier_sensitive` compares never-shown facts
+with the highest tier (300× in data_v2). All other thresholds are unchanged.
+
+**Preflight rule** (`scripts/preflight_check.py`, 1/10 scale: same facts, ~105M tokens, ~45 min). GO to the full
+~5 h `base_v2` run only if all three hold:
+1. **question_recall:** top-tier question recall ≥ 0.5 and ≥ 0.7 × cloze recall (base_v1: 0.19 vs 0.75, ratio 0.25)
+2. **exposure_gradient:** top-tier question recall ≥ lowest taught tier + 0.1, and ≤ 0.15 for never-shown facts
+3. **real_decision:** the Phase 4 gate's `decisive_policy` and `tier_sensitive` checks both pass
+
+Version-1 artefacts (`data_v1`, `base_v1`, the three Phase 4 attempts) stay as they are and are reported as version 1.
+
+### Preflight 1 (STOP)
+
+**Run:** `notebooks/preflight_v2.ipynb`, `QUICK = False` (Kaggle `uabr-preflight-v2`), 7 Nov 2026. 37 tests passed.
+data_v2 full build: 1,005,003,687 train tokens, 105,004,865 preflight tokens, 8/8 audits. Preflight model: 1,602 steps,
+105M tokens, validation loss 4.77 → 3.36.
+
+| Exposure | 0 | 40× | 120× | 300× |
+|---|---|---|---|---|
+| Cloze recall | 0.031 | 0.659 | 0.920 | 0.980 |
+| **Question recall** | 0.031 | **0.894** | **0.996** | **0.997** |
+
+Question / cloze at the top tier: **1.018** (base_v1: 0.25). Labels: 87% of non-test facts known.
+
+Phase 4 at preflight scale (`question` format, LR 1e-4): 18,792 ANSWER + 2,208 CALL examples available, 4,416 per
+epoch, 207 updates. Routing AUROC 0.468 (0.429–0.509); mutual information 0.134; default call rate 0.046; CALL rate by
+tier 0.03 / 0.05 / 0.06 / 0.04; direct accuracy on dev fell from 0.771 (base) to 0.567; CALL-path accuracy 0.391
+overall and 0.498 where the right record was retrieved. Failed: both_actions_learned, useful_ranking, call_path_works,
+tier_sensitive.
+
+| Rule | Result |
+|---|---|
+| question_recall | **PASS** |
+| exposure_gradient | **PASS** |
+| real_decision | FAIL |
+| **Preflight** | **STOP** |
+
+**Diagnosis.** The data and pretraining change worked: question-format recall now matches sentence recall. The failure
+is in the Phase 4 recipe on the new data: (a) the CALL path must pick the right record out of three, and 2,208 examples
+taught that only to 50%; (b) with only ~10% of facts unknown, the 50/50 balance left 207 updates in total; (c) the LR of
+1e-4, above the 6e-5 where pretraining ends, erased recall (0.77 → 0.57) during fine-tuning.
+
+**Change for preflight 2** (Phase 4 recipe only; data, preflight model and rule unchanged): reading-practice examples
+for every retrieved prompt (the CALL path with loss on the answer only, so they teach reading the records but not
+when to call), and LR 3e-5 → 3e-6 for data_v2. The preflight model from run 1 is reused.
+
+### Preflight 2 (STOP)
+
+**Run:** same notebook, preflight model from run 1 reused, 7 Nov 2026. 38 tests passed. Phase 4 with reading practice
+(17,124 examples, answer-only loss) and LR 3e-5: 21,540 examples per epoch, 1,011 updates.
+
+| Measure | Preflight 1 | Preflight 2 |
+|---|---|---|
+| CALL-path accuracy where the record is retrieved | 0.498 | **0.797** |
+| Direct accuracy on dev after Phase 4 (base: 0.771) | 0.567 | **0.706** |
+| Direct accuracy, facts labelled known / unknown | 0.654 / 0.041 | 0.797 / 0.128 |
+| Routing AUROC (95% CI) | 0.468 (0.429–0.509) | 0.472 (0.432–0.510) |
+| AUROC vs knowledge label | 0.541 | 0.519 |
+| CALL rate by tier (0 / 40 / 120 / 300) | 0.03 / 0.05 / 0.06 / 0.04 | 0.03 / 0.05 / 0.05 / 0.05 |
+| Failed checks | both_actions, useful_ranking, call_path, tier_sensitive | same |
+
+**Reading.** Reading practice and the lower LR fixed the CALL path and the loss of recall. The routing decision itself
+did not move: dev AUROC stays near or below 0.5 at every checkpoint. Before changing the recipe again, the next run
+measures whether the routing signal exists at all (`scripts/diagnose_routing.py`): output confidence and linear probes
+on the frozen preflight model, scored on dev.
+
+### Routing-signal diagnostic (preflight model, no training)
+
+**Run:** `scripts/diagnose_routing.py` in the preflight notebook, 8 Nov 2026. Frozen preflight model; target = "the direct
+answer is wrong" on 1,440 dev prompts (wrong rate 0.229); linear probes trained on 4,000 delegation_train prompts.
+
+| Signal | Dev AUROC |
+|---|---|
+| Low top next-token probability after `<ANSWER>` | **0.919** |
+| High entropy after `<ANSWER>` | 0.886 |
+| Low mean log-prob of the greedy answer | 0.890 |
+| Linear probe, hidden state at the decision position (after `<ASSISTANT>`) | 0.517 |
+| Linear probe, hidden state at the answer position (after `<ANSWER>`) | 0.528 |
+
+| Exposure | 0 | 40× | 120× | 300× |
+|---|---|---|---|---|
+| Direct answer wrong | 0.993 | 0.264 | 0.100 | 0.069 |
+| Top next-token probability after `<ANSWER>` | 0.228 | 0.428 | 0.616 | 0.756 |
+
+**Verdict:** the model does know what it does not know, but the knowledge is expressed in the *shape of its answer
+distribution* at the answer position (a nonlinear function of the hidden state: a linear probe does not recover it),
+not at the position where Phase 4 asked it to decide.
+
+**Change for preflight 3** (fixed before the run; data, preflight model and rule unchanged): the `answer_slot` format.
+`<BOS><USER> question<ASSISTANT><ANSWER>` is the decision prefix; the next token is either the answer's first word
+(direct answer) or `<CALL>` (then evidence and the copied answer). `<CALL>` competes in the same softmax as the answer
+words, so a spread-out answer distribution leaves room for `<CALL>` to win. Routing score =
+log p(`<CALL>`) − max log p(any other token); the forced direct answer never generates action tokens. The gate also
+reports, for reference, the AUROC of routing by the model's own answer confidence alone.
+
+### Preflight 3 (GO)
+
+**Run:** same notebook, preflight model from run 1 reused, 8 Nov 2026. 38 tests passed. Phase 4 in the `answer_slot`
+format, otherwise as preflight 2 (reading practice, LR 3e-5, 1,011 updates). Best dev-subset AUROC at update 200 (0.663);
+later checks 0.58–0.66 while training loss fell to 0.005 (the training entities are memorised; dev uses other people).
+
+| Measure (full dev, 1,440 prompts) | Preflight 2 (`question`) | Preflight 3 (`answer_slot`) |
+|---|---|---|
+| Routing AUROC (95% CI) | 0.472 (0.432–0.510) | **0.663 (0.632–0.696)** |
+| AUROC vs knowledge label | 0.519 | **0.692** |
+| Reference: answer confidence alone | — | 0.716 |
+| Mutual information | 0.149 | **0.504** |
+| CALL rate by tier (0 / 40 / 120 / 300) | 0.03 / 0.05 / 0.05 / 0.05 | **0.80 / 0.63 / 0.58 / 0.37** |
+| Default call rate | 0.049 | 0.549 |
+| Accuracy at 10% call budget | 0.690 | 0.666 |
+| Direct accuracy, known / unknown facts | 0.797 / 0.128 | 0.733 / 0.077 |
+| CALL-path accuracy where retrieved | 0.797 | 0.784 |
+| Failed gate checks | 4 | 2 (both_actions_learned: ANSWER recall 0.49; call_path_works: 0.784 < 0.9) |
+
+| Rule | Result |
+|---|---|
+| question_recall | PASS |
+| exposure_gradient | PASS |
+| real_decision | **PASS** |
+| **Preflight** | **GO** |
+
+**Reading.** For the first time the decision depends on what the model knows: the CALL rate falls steadily with
+exposure, and mutual information is 0.50 bits. Open points for the full `base_v2` run: the learned router (0.663)
+still sits below the model's own answer confidence (0.716); the best checkpoint calls too often at the default threshold
+(the budget metrics are rank-based and unaffected); and the CALL path copies the right record 78% of the time.
+Next: Phase 3 on data_v2 (1B tokens), then Phase 4 with the same recipe.
+
+## Phase 3 v2: base_v2
+
+**Run:** `notebooks/phase3_pretrain.ipynb`, `DATA_VERSION = "data_v2"`, `QUICK = False` (Kaggle `uabr-p3-pretrain-v2`), 9 Nov 2026,
+one session. **Gate: PASSED**
+
+| Item | Result |
+|---|---|
+| Data | data_v2, 1,005,003,687 train tokens, 8/8 audits |
+| Steps / tokens | 15,260 / 1,000,079,360 |
+| Throughput | ~50,000 tokens/s with `--compile`, no NaN, peak memory 5.2 GB |
+| Validation loss | 4.443 (step 500) → 3.341 (2k) → 3.072 (5k) → 2.890 (10k) → **2.805** (15k), perplexity 16.5 (base_v1: 2.814) |
+| Final training loss | 2.826 |
+| Checkpoint | `base_v2.pt`, 159 MB |
+
+**Fact probe** (cloze, greedy exact match, 300 facts per tier):
+
+| Exposure | 0 (withheld) | 40× | 120× | 300× |
+|---|---|---|---|---|
+| Exact match | 0.037 | 0.613 | 0.913 | **0.967** |
+| Mean gold log-prob | −6.25 | −1.55 | −0.59 | −0.32 |
+
+Language modelling is as good as base_v1 (validation loss 2.805 vs 2.814) although ~1.3% of the corpus is now fact
+exposures, and the controlled facts are stored by exposure as designed. Next: Phase 4 on base_v2 (`answer_slot`).
+
+## Phase 6 + 7 plan (fixed before any Phase 6 or test result)
+
+Written on 9 Nov 2026, before Phase 4 v2 finished. Nothing below changes after results come in; any deviation is
+reported as a deviation.
+
+**Branches** (each from `delegation_v1`, seeds 11 and 29): Standard SFT (the Phase 5 100% checkpoints), SFT + Random
+replay, SFT + BPR replay, SFT + UABR replay. 8 branches in total.
+
+**Matched budget.** All branches with the same seed use identical instruction batches and make the same number of
+updates. Replay examples are added inside those batches. Each replay method selects candidates worth 25% of the
+`replay_construction` pool's tokens, then repeats them in a fixed shuffled order up to 5% of the instruction tokens, so
+replay tokens are equal across methods (`configs/replay.yaml`).
+
+**Selection** (`src/replay/selectors.py`), all from one scoring pass of `delegation_v1` over `replay_construction`
+(people not used for Phase 4 training, dev or test):
+
+| Method | Order | Replay target |
+|---|---|---|
+| Random | seeded shuffle | Phase 4 knowledge label |
+| BPR | smallest margin \|call_score\| first | Phase 4 knowledge label |
+| UABR | largest exp(−m/τ)·\|ΔU\|, ΔU = R(call) − R(answer) − 0.1, τ = median margin | CALL if ΔU > 0, else ANSWER |
+
+A CALL target is never given where the keyword search does not return the right record.
+
+**Test split** is opened once, by `scripts/final_eval.py`, on all test prompts.
+
+- **Primary endpoint:** exact-match accuracy at a 10% call budget (top 10% of prompts by call score call).
+- **Primary comparison:** UABR − Standard, UABR − BPR and UABR − Random, paired bootstrap (2,000 resamples, same test
+  prompts), separately per seed.
+- **Claim rule:** "UABR protects the policy better than X" only if the 95% CI excludes 0 in favour of UABR for **both**
+  seeds. One seed significant = "suggestive". Otherwise = "no difference detected".
+- **Secondary (reported, no claims):** routing AUROC, accuracy at 5% and 20% budgets, harmful-answer and wasteful-call
+  rates, mutual information, CALL rate for never-shown vs 300× facts, ECE.
+
+If Phase 5 returns NO_CHANGE (SFT does not damage the policy), Phase 6 is still run and reported, but the paper's
+framing becomes "replay is not needed at this scale" rather than "replay repairs damage".
+
+## Phase 4 v2: delegation_v1 on base_v2
+
+**Run:** `notebooks/phase4_delegation.ipynb`, `DATA_VERSION = "data_v2"`, `QUICK = False` (Kaggle `uabr-p4-delegation-v2`,
+commit `065eec5`), 9 Nov 2026. 48/48 tests passed first. **Gate: PASSED (6/6)**
+
+**Knowledge labels** (question-format recall of `base_v2`, 5,760 non-test facts):
+
+| Exposure | 0 | 40× | 120× | 300× |
+|---|---|---|---|---|
+| Known, question format | 0.036 | 0.683 | 0.975 | 0.998 |
+| Known, cloze format | 0.043 | 0.577 | 0.896 | 0.969 |
+
+ANSWER share: delegation_train 0.799, dev 0.810, replay_construction 0.797.
+
+**Training:** `answer_slot`, LR 3e-5, 1,128 updates (3 epochs, 4.3M tokens), 17,124 reading-practice examples, 870
+unknown-fact prompts left out because their record is not retrieved. Dev AUROC checked every 200 updates:
+0.665 (200), 0.650, **0.673 (400, kept)**, 0.659, 0.670, 0.649, 0.656, 0.658 (end). Training loss fell to ~0.005, so the
+early-stopping rule mattered.
+
+**Gate on full dev (1,440 prompts):**
+
+| Item | Result |
+|---|---|
+| Routing AUROC vs benefit | **0.673** (95% CI 0.643–0.706); AP 0.387 |
+| Reference: AUROC of the model's own answer confidence | 0.749 |
+| Direct accuracy, known vs unknown facts | 0.777 vs 0.099 |
+| CALL-path accuracy | 0.758 overall; **0.974** where the record is retrieved (78% of prompts) |
+| End-to-end accuracy | always answer 0.648 · default decision 0.742 (call rate 0.358) · always call 0.758 · oracle 0.906 |
+| Accuracy at 5 / 10 / 20% call budget | 0.664 / **0.685** / 0.715 |
+| Mutual information (decisiveness) | **0.467 bits**; near-coin-flip prompts 8.3% |
+| CALL rate by tier | 0× 0.57 · 40× 0.42 · 120× 0.37 · 300× 0.21 |
+| Checks | both_actions, useful_ranking, direct_path, call_path, decisive_policy, tier_sensitive: **all PASS** |
+
+**Reading.** For the first time on the full-scale model, the answer-or-call decision depends on what the model
+knows: the CALL rate halves from never-shown to 300× facts, and the decision is confident per prompt (0.47 bits).
+Two limits are reported as they are: the learned router ranks prompts less well than the model's own answer confidence
+(0.673 vs 0.749), and "always call" (0.758) beats the default decision (0.742) because the CALL path is right 97% of
+the time when retrieval works. The Phase 5 and 6 comparisons are about whether SFT damages *this* policy and which replay
+keeps it, so the main metric is relative: change in accuracy at a fixed 10% call budget.
+
+## Phase 6 + 7, run 1 (crashed; deviation note)
+
+**Run:** `notebooks/phase6_7_replay_eval.ipynb`, `QUICK = False` (Kaggle `uabr-p67-replay`, commit `f193929`), 10 Nov 2026.
+
+Steps 1–2 completed: the replay table (2,880 prompts; record retrieved 79.8%; benefit −1 / 0 / +1 = 367 / 1,741 / 772;
+median margin 2.12) and the selections (pool 72,511 tokens; each method selects 18,127 tokens and replays 300,003 tokens).
+All six SFT runs then stopped at once: the notebook passes `--resume`, and `src/train/sft.py` refused `--resume` when no
+checkpoint existed yet. `final_eval.py` then scored `delegation_v1` and the two Standard SFT branches on test before
+failing on the missing replay checkpoints.
+
+**Deviation.** The test split was therefore read once already for those three models (`delegation_v1` acc@10% 0.704, AUROC
+0.684; Standard s11 0.324 / 0.511; Standard s29 0.331 / 0.493). The fix (`--resume` on a fresh run now starts from step 0)
+changes no method, setting, selection or claim rule; the replay files are regenerated identically from the same table
+and seeds. Run 2 repeats the whole notebook, and its numbers are the reported ones.
+
+## Phase 6 + 7, run 2: final results
+
+**Run:** `notebooks/phase6_7_replay_eval.ipynb`, `QUICK = False` (Kaggle `uabr-p67-replay`, version 2, commit `12b5ab2`),
+10 Nov 2026. 48/48 tests passed. Replay table and selections identical to run 1.
+
+**Budgets (matched).** Every branch: 1,092 updates, 6,000,073 instruction tokens; replay branches 300,012–300,070 replay
+tokens (5.0%). SFT time 7.9–8.9 min per run.
+
+**Selections** (seed 11; seed 29 differs only for Random):
+
+| Method | Distinct prompts | Replay rows | Targets ANSWER / CALL | Mean margin | Benefit −1 / 0 / +1 | Unknown facts |
+|---|---|---|---|---|---|---|
+| Random | 685 | 11,358 | 562 / 123 | 2.46 | 101 / 385 / 199 | 18% |
+| BPR | 640 | 10,594 | 502 / 138 | 0.46 | 77 / 333 / 230 | 22% |
+| UABR | 358 | 5,950 | 125 / 233 | 0.56 | 121 / 4 / 233 | 37% |
+
+Jaccard overlap of selected prompts: UABR–BPR 0.444, UABR–Random 0.118, BPR–Random 0.157.
+
+**Test results (2,880 prompts):**
+
+| Branch | Seed | Acc @5% | **Acc @10%** | Acc @20% | AUROC | Harmful @10% | Wasteful @10% | MI | CALL rate 0× / 300× |
+|---|---|---|---|---|---|---|---|---|---|
+| delegation_v1 | – | 0.688 | **0.704** | 0.733 | 0.684 | 0.218 | 0.041 | 0.444 | 0.557 / 0.195 |
+| Standard | 11 | 0.315 | **0.324** | 0.345 | 0.511 | 0.257 | 0.024 | 0.372 | 0.294 / 0.201 |
+| Standard | 29 | 0.322 | **0.331** | 0.342 | 0.493 | 0.225 | 0.028 | 0.339 | 0.237 / 0.149 |
+| Random | 11 | 0.461 | **0.479** | 0.514 | 0.594 | 0.354 | 0.030 | 0.529 | 0.653 / 0.448 |
+| Random | 29 | 0.460 | **0.478** | 0.513 | 0.587 | 0.360 | 0.027 | 0.541 | 0.592 / 0.430 |
+| BPR | 11 | 0.429 | **0.453** | 0.497 | 0.596 | 0.374 | 0.025 | 0.540 | 0.641 / 0.416 |
+| BPR | 29 | 0.432 | **0.453** | 0.499 | 0.603 | 0.370 | 0.025 | 0.554 | 0.618 / 0.423 |
+| UABR | 11 | 0.396 | **0.419** | 0.474 | 0.600 | 0.404 | 0.024 | 0.285 | 0.954 / 0.888 |
+| UABR | 29 | 0.404 | **0.427** | 0.475 | 0.598 | 0.395 | 0.023 | 0.312 | 0.947 / 0.879 |
+
+**Paired bootstrap (2,000 resamples, 95% CI; * = excludes 0):**
+
+| Comparison | Seed 11 acc@10% | Seed 29 acc@10% | Seed 11 AUROC | Seed 29 AUROC |
+|---|---|---|---|---|
+| UABR − Standard | +0.095 [+0.079, +0.111] * | +0.097 [+0.081, +0.113] * | +0.088 [+0.064, +0.114] * | +0.105 [+0.077, +0.132] * |
+| UABR − BPR | −0.034 [−0.048, −0.018] * | −0.026 [−0.041, −0.011] * | +0.004 [−0.015, +0.023] | −0.005 [−0.022, +0.014] |
+| UABR − Random | −0.059 [−0.075, −0.042] * | −0.051 [−0.067, −0.035] * | +0.006 [−0.014, +0.026] | +0.010 [−0.010, +0.030] |
+| BPR − Standard | +0.129 [+0.111, +0.145] * | +0.123 [+0.106, +0.141] * | +0.085 [+0.058, +0.112] * | +0.110 [+0.081, +0.137] * |
+| Random − Standard | +0.155 [+0.138, +0.172] * | +0.148 [+0.131, +0.166] * | +0.083 [+0.056, +0.109] * | +0.095 [+0.066, +0.125] * |
+
+**Verdict under the preregistered claim rule.**
+
+- UABR protects the policy better than **Standard SFT**: supported (both seeds, both metrics).
+- UABR protects it better than **BPR** or **Random**: **not supported**. On the primary endpoint UABR is significantly
+  worse than both in both seeds; on routing AUROC all three replay methods are tied.
+- Ordering on the primary endpoint, consistent in both seeds: Random > BPR > UABR > Standard.
+
+**Why UABR loses (post-hoc analysis, not preregistered).**
+
+1. *Target imbalance.* UABR's targets are 65% CALL (233 / 358) because it keeps only prompts where the choice matters
+   (benefit 0 is almost excluded: 4 of 358), and in this pool calling helps twice as often as it hurts (772 vs 367).
+   Random and BPR replay ~80% ANSWER targets.
+2. *Policy shift to always-call.* After UABR replay the model calls for 95% of never-shown and 88% of 300× facts;
+   mutual information falls to 0.30 bits (Random 0.54). The ranking itself (AUROC) is as good as with the baselines.
+3. *Less recall rehearsal.* At a 10% call budget, 90% of prompts are answered directly, so accuracy depends mostly on
+   direct recall. UABR replays 125 distinct ANSWER examples vs 562 for Random; its harmful-answer rate is the highest
+   (0.40 vs 0.36). Random, with the most ANSWER rehearsal, scores best.
+
+**Takeaways.** (1) Replay is necessary and cheap: 5% replay tokens recover ~40% of the lost accuracy and ~half the lost
+AUROC. (2) Choosing replay by decision utility alone is harmful when it unbalances the action targets; a balanced
+UABR (equal ANSWER/CALL budgets within the utility ranking) is the natural next experiment and was not run, because
+the test split has been used.

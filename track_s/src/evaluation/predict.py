@@ -1,0 +1,82 @@
+"""Score both actions once per prompt .
+
+For every prompt this records the routing log-probabilities, the forced direct answer, the forced
+evidence-assisted answer, their rewards and the oracle analysis. Every metric is computed from this one
+table, so different scripts cannot disagree.
+"""
+import time
+
+import numpy as np
+import pandas as pd
+
+from src.data import formats
+from src.evaluation.generate import greedy, next_token_logprobs, slot_scores
+
+
+def predict(model, tok, prompts, evidence, fmt="question", run_id="", checkpoint="", tokenizer_hash="", batch_size=256,
+            max_new=12):
+    """prompts: list of dicts from load_prompts (question, relation, entity, aliases, evidence_doc_id, ...).
+    fmt: the delegation format the model was trained with (formats.DELEGATION_FORMATS)."""
+    t0 = time.time()
+    enc = lambda s: tok.encode(s).ids  # noqa: E731
+    base = [formats.decision_ids(tok, fmt, p["question"], p["relation"], p["entity"]) for p in prompts]
+    if fmt == "answer_slot":
+        # logp_answer = best log-probability of any answer word; logp_call = log p(<CALL>) at the same position
+        route = [(best, lc) for lc, best in slot_scores(model, base, formats.CALL, batch_size)]
+        ans_prompts = base
+    else:
+        route = next_token_logprobs(model, base, [formats.ANSWER, formats.CALL], batch_size)
+        ans_prompts = [b + [formats.ANSWER] for b in base]
+    t_route = time.time()
+    # forced direct answer: the action/evidence tokens can never be generated on this path
+    ans = greedy(model, ans_prompts, max_new, stop_ids=[formats.EOS, formats.BOS], batch_size=batch_size,
+                 ban_ids=[formats.CALL, formats.EV_OPEN, formats.EV_CLOSE, formats.ANSWER])
+    t_ans = time.time()
+
+    ev_text = [evidence.for_prompt(p) for p in prompts]
+    call_prompts = [b + enc(f"<CALL><EVIDENCE> {e} </EVIDENCE>") for b, e in zip(base, ev_text)]
+    calls = greedy(model, call_prompts, max_new, stop_ids=[formats.EOS, formats.BOS], batch_size=batch_size)
+    t_call = time.time()
+
+    rows = []
+    for p, (la, lc), a, c in zip(prompts, route, ans, calls):
+        a_txt, c_txt = tok.decode(a).strip(), tok.decode(c).strip()
+        ra, rc = formats.exact_match(a_txt, p["aliases"]), formats.exact_match(c_txt, p["aliases"])
+        pred = "CALL" if lc > la else "ANSWER"
+        b = rc - ra
+        rows.append({
+            "run_id": run_id, "prompt_id": p["prompt_id"], "fact_id": p["fact_id"], "split": p["split"],
+            "relation": p["relation"], "template_family": p["template_family"],
+            "exposure_count": p["exposure_count"], "question": p["question"], "gold": p["answer"],
+            "logp_answer": la, "logp_call": lc, "call_score": lc - la, "predicted_action": pred,
+            "answer_text": a_txt, "normalized_answer": formats.normalize_answer(a_txt), "reward_answer": ra,
+            "evidence_doc_id": p["evidence_doc_id"], "record_retrieved": bool(p.get("record_retrieved", True)),
+            "call_answer_text": c_txt,
+            "normalized_call_answer": formats.normalize_answer(c_txt), "reward_call": rc,
+            "benefit": b, "preferred_action": "CALL" if b > 0 else "ANSWER",
+            "harmful_answer": int(pred == "ANSWER" and ra == 0 and rc == 1),
+            "wasteful_call": int(pred == "CALL" and ra == 1),
+            "both_fail": int(ra == 0 and rc == 0),
+            "delegation_format": fmt, "model_checkpoint": checkpoint, "tokenizer_hash": tokenizer_hash, "evidence_index_hash": evidence.version,
+        })
+    df = pd.DataFrame(rows)
+    n = max(len(prompts), 1)
+    df.attrs["latency_ms_per_prompt"] = {"route": 1000 * (t_route - t0) / n, "answer": 1000 * (t_ans - t_route) / n,
+                                         "call": 1000 * (t_call - t_ans) / n}
+    return df
+
+
+def load_prompts(facts_dir, split, limit=None, seed=0):
+    """Prompt rows of one split, each with the entity's pseudonym added as "entity" (needed by the ANSWER scaffold)."""
+    import json
+    from pathlib import Path
+    rows = [json.loads(l) for l in open(Path(facts_dir) / "prompts.jsonl")]
+    rows = [r for r in rows if r["split"] == split]
+    led = pd.read_parquet(Path(facts_dir) / "exposure_ledger.parquet", columns=["fact_id", "pseudonym"])
+    name = dict(zip(led.fact_id, led.pseudonym))
+    for r in rows:
+        r["entity"] = name[r["fact_id"]]
+    if limit and limit < len(rows):
+        rng = np.random.default_rng(seed)
+        rows = [rows[i] for i in sorted(rng.choice(len(rows), limit, replace=False))]
+    return rows
