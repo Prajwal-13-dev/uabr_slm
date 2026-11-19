@@ -1,14 +1,10 @@
 # Instruction Tuning Disrupts a Small Model's Retrieval Policy: Two Testbeds and Teacher-Based Decision Anchoring
 
-[![Course](https://img.shields.io/badge/Course-AFML%20(5th%20Sem)-blue)](https://pes.edu)
-[![Institution](https://img.shields.io/badge/PES%20University-Bengaluru-orange)](https://pes.edu)
-[![Paper](https://img.shields.io/badge/Paper-IEEE%20Format%20PDF-red)](report/Report_FINAL.pdf)
 
 > **Team Straw Hats (PES University, AFML)**  
 > **Authors:** Pradeep T, Prajwal A, Nikitha Uppar, Sakshi Kiran  
 > **Project:** UABR-SLM (Utility-Aware Boundary Replay & Decision Anchoring on ~40M Small Language Models)
 
----
 
 ## Summary
 
@@ -20,8 +16,6 @@ In this project, we train a **39.7M-parameter decoder-only LLaMA model from scra
 1. **SFT Disrupts Routing:** Instruction tuning severely damages the retrieval policy. In Track S, AUROC drops from **0.684 → ~0.50** (chance). In Track P, AUROC drops from **0.828 → ~0.70**, and closed-book exact match drops from 11.3% to ~1.7%.
 2. **UABR Does Not Beat Random Replay:** Prioritizing boundary points ($q_i = \exp(-m_i/\tau) \cdot |\Delta U_i|$) underperforms uniform random replay. Boundary examples suffer from label noise and narrow coverage. In Track S, utility-derived targets skewed the buffer to 65% `<CALL>`, causing the model to over-retrieve.
 3. **The Breakthrough — Decision-Slot Anchoring:** Probing reveals that internal representations still retain the routing information, but the output unembedding head drifts during SFT (**readout misalignment**). A teacher-based decision-slot anchoring loss ($A_1$ / $A_2$) restores test AUROC to **0.829–0.830** (pre-SFT: 0.828) while retaining **99.4%** of instruction gains, without requiring ground-truth routing labels.
-
----
 
 ## Dual-Track Experimental Design
 
@@ -36,8 +30,6 @@ Our study evaluates the phenomenon across two complementary testbeds:
 | **Routing Target** | Knowledge-based ($b_{\text{net}} > 0$) vs Utility-derived | Counterfactual benefit ($b_{\text{net}} = \bar{F}_1(C) - \bar{F}_1(A) - \lambda$) |
 | **Primary Metric** | Exact-match accuracy at 10% call budget | Sealed-test routing AUROC (paired clustered bootstrap) |
 | **Paper Reference**| **Table 2** | **Table 3, Table 4, and Figure 1** |
-
----
 
 ## Key Results
 
@@ -70,7 +62,6 @@ Pre-SFT Router Baseline: **AUROC 0.828 [0.804, 0.849]**, Call Rate 13.9%.
 | **BPR (Boundary-only)** | 0.665 / 0.710 | 3.2 / 3.7 | -0.028 / +0.010 (Weakest) |
 | **Plain SFT** | 0.693 / 0.700 | 28.6 / 21.2 | Baseline failure |
 
----
 
 ## Repository Structure
 
@@ -116,8 +107,6 @@ uabr_slm/
 └── docs/                       # Specifications and Gate verification logs
 ```
 
----
-
 ## How to Run & Reproduce
 
 ### 1. Environment Setup
@@ -144,7 +133,6 @@ The pipeline is designed to execute cleanly on Kaggle (T4 x2 GPUs) or local work
 * **Phase 11–12:** Probing analysis and Decision-Slot Anchoring ($A_1$ / $A_2$) (`notebooks/11_posthoc.ipynb`, `notebooks/12_methods.ipynb`).
 * **Phase 09:** Final evaluation on the sealed test split (`notebooks/09_test.ipynb`).
 
----
 
 ## Official Dataset Links
 
@@ -158,11 +146,3 @@ All datasets used in this work are publicly available:
    * **Cleaned Stanford Alpaca**: [https://huggingface.co/datasets/yahma/alpaca-cleaned](https://huggingface.co/datasets/yahma/alpaca-cleaned)
 4. **Track S Synthetic Data**: Deterministically generated via random seed scripts in `track_s/scripts/generate_synthetic.py`.
 
----
-
-## Citation & Project Report
-
-If referencing this study or reproducing our experiments, please refer to our full project report:
-* **PDF Report:** [`report/Report_FINAL.pdf`](report/Report_FINAL.pdf)
-* **Title:** *Instruction Tuning Disrupts a Small Model's Retrieval Policy: Two Testbeds and Teacher-Based Decision Anchoring*
-* **Course:** Advanced Foundations of Machine Learning (AFML), PES University, 2026.
