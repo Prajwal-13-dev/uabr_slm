@@ -32,6 +32,7 @@ Our study evaluates the phenomenon across two complementary testbeds:
 | **Paper Reference**| **Table 2** | **Table 3, Table 4, and Figure 1** |
 
 Track S was developed in github.com/GTX-Pradeep/uabr-slm
+**[Track S — UABR-SLM](https://github.com/GTX-Pradeep/uabr-slm)**
 ## Key Results
 
 ### 1. Track S Results (Table 2 in Paper)
